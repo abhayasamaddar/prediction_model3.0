@@ -447,6 +447,61 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
     
     return plots
 
+def create_prediction_json(future_predictions, selected_targets, models_to_send):
+    """Create JSON format of prediction data"""
+    try:
+        if models_to_send and len(models_to_send) > 0:
+            primary_model = models_to_send[0]
+            
+            # Create comprehensive data structure with all 24 hours
+            prediction_json = {
+                "timestamp": datetime.now().isoformat(),
+                "model_used": primary_model,
+                "predictions_24h": []
+            }
+            
+            # Add predictions for all 24 hours
+            for hour in range(24):
+                hour_data = {
+                    "hour": hour + 1,
+                    "predictions": {}
+                }
+                
+                # Get predictions for all targets for this hour
+                for target in selected_targets:
+                    if (primary_model in future_predictions and 
+                        target in future_predictions[primary_model] and 
+                        len(future_predictions[primary_model][target]) > hour):
+                        value = future_predictions[primary_model][target][hour]
+                        if not np.isnan(value):
+                            hour_data["predictions"][target] = float(value)
+                
+                # Add default values if missing
+                if 'rain' not in hour_data["predictions"]:
+                    hour_data["predictions"]['rain'] = 0
+                if 'light' not in hour_data["predictions"]:
+                    hour_data["predictions"]['light'] = 0
+                
+                prediction_json["predictions_24h"].append(hour_data)
+            
+            return prediction_json
+        else:
+            return None
+            
+    except Exception as e:
+        st.error(f"Error creating JSON: {e}")
+        return None
+
+def download_json(data, filename="prediction_data.json"):
+    """Create download button for JSON data"""
+    json_str = json.dumps(data, indent=2)
+    st.download_button(
+        label="📥 Download Prediction Data as JSON",
+        data=json_str,
+        file_name=filename,
+        mime="application/json"
+    )
+
 def test_blynk_connection():
     """Test if Blynk API is accessible"""
     try:
@@ -467,99 +522,42 @@ def test_blynk_connection():
     except requests.exceptions.RequestException as e:
         return False, f"Connection failed: {str(e)}"
 
-def send_all_predictions_to_v0(predictions_data, selected_targets, models_to_send):
-    """Send ALL prediction data for next 24 hours to Blynk virtual pin V0 as JSON"""
+def send_json_to_blynk_v0(json_data):
+    """Send JSON data to Blynk virtual pin V0"""
     try:
-        if models_to_send and len(models_to_send) > 0:
-            primary_model = models_to_send[0]
-            
-            # Create comprehensive data structure with all 24 hours
-            blynk_payload = {
-                "timestamp": datetime.now().isoformat(),
-                "model_used": primary_model,
-                "predictions_24h": []
-            }
-            
-            # Add predictions for all 24 hours
-            for hour in range(24):
-                hour_data = {
-                    "hour": hour + 1,
-                    "predictions": {}
-                }
+        # Convert to JSON string
+        json_str = json.dumps(json_data, indent=2)
+        
+        # URL encode the JSON data
+        encoded_json = urllib.parse.quote(json_str)
+        
+        # Try both V0 and v0
+        pin_variants = ['V0', 'v0']
+        
+        for pin in pin_variants:
+            try:
+                # Format: https://blynk.cloud/external/api/update?token=YOUR_TOKEN&V0=URL_ENCODED_JSON
+                url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&{pin}={encoded_json}"
                 
-                # Get predictions for all targets for this hour
-                for target in selected_targets:
-                    if (primary_model in predictions_data and 
-                        target in predictions_data[primary_model] and 
-                        len(predictions_data[primary_model][target]) > hour):
-                        value = predictions_data[primary_model][target][hour]
-                        if not np.isnan(value):
-                            hour_data["predictions"][target] = float(value)
+                st.write(f"📤 Sending data to {pin}...")
                 
-                # Add default values if missing
-                if 'rain' not in hour_data["predictions"]:
-                    hour_data["predictions"]['rain'] = 0
-                if 'light' not in hour_data["predictions"]:
-                    hour_data["predictions"]['light'] = 0
+                response = requests.get(url, timeout=15)
                 
-                blynk_payload["predictions_24h"].append(hour_data)
-            
-            # Convert to JSON string
-            json_data = json.dumps(blynk_payload, indent=2)
-            
-            # URL encode the JSON data
-            encoded_json = urllib.parse.quote(json_data)
-            
-            # Try both V0 and v0
-            pin_variants = ['V0', 'v0']
-            
-            for pin in pin_variants:
-                try:
-                    # Format: https://blynk.cloud/external/api/update?token=YOUR_TOKEN&V0=URL_ENCODED_JSON
-                    url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&{pin}={encoded_json}"
-                    
-                    st.write(f"📤 Sending data to {pin}...")
-                    st.write(f"URL: {url[:100]}...")  # Show first 100 chars of URL
-                    
-                    response = requests.get(url, timeout=15)
-                    
-                    if response.status_code == 200:
-                        st.success(f"✅ Successfully sent ALL prediction data to {pin}!")
-                        
-                        # Show data summary
-                        st.info(f"Sent {len(blynk_payload['predictions_24h'])} hours of predictions")
-                        st.json(blynk_payload)
-                        
-                        return True
-                    else:
-                        st.error(f"❌ Failed to send to {pin}: HTTP {response.status_code}")
-                        st.write(f"Response: {response.text}")
-                except Exception as e:
-                    st.error(f"❌ Error sending to {pin}: {str(e)}")
-            
-            st.error("❌ Failed to send data to any virtual pin variant")
-            return False
-        else:
-            st.warning("No valid prediction data to send to Blynk")
-            return False
+                if response.status_code == 200:
+                    st.success(f"✅ Successfully sent prediction data to {pin}!")
+                    return True
+                else:
+                    st.error(f"❌ Failed to send to {pin}: HTTP {response.status_code}")
+                    st.write(f"Response: {response.text}")
+            except Exception as e:
+                st.error(f"❌ Error sending to {pin}: {str(e)}")
+        
+        st.error("❌ Failed to send data to any virtual pin variant")
+        return False
             
     except Exception as e:
         st.error(f"❌ Error sending data to Blynk: {e}")
         return False
-
-def get_blynk_data():
-    """Get data from Blynk API from V0"""
-    try:
-        # Try both V0 and v0
-        for pin in ['V0', 'v0']:
-            url = f"{BLYNK_GET_BASE_URL}?token={BLYNK_API_TOKEN}&{pin}"
-            response = requests.get(url)
-            if response.status_code == 200:
-                return response.text, pin
-        return None, None
-    except Exception as e:
-        st.error(f"Error getting data from Blynk: {e}")
-        return None, None
 
 def main():
     st.set_page_config(page_title="Air Quality Prediction", layout="wide")
@@ -585,15 +583,6 @@ def main():
                     if success:
                         st.success("Blynk connection successful!")
                         st.write(message)
-                        
-                        # Test reading from V0
-                        with st.spinner('Reading from V0...'):
-                            data, pin_used = get_blynk_data()
-                            if data is not None:
-                                st.success(f"Successfully read from {pin_used}")
-                                st.write(f"Current V0 data: {data}")
-                            else:
-                                st.warning("Could not read from V0 (might be empty)")
                     else:
                         st.error(f"Blynk connection failed: {message}")
     
@@ -864,26 +853,38 @@ def main():
                     pred_df = pd.DataFrame(prediction_data)
                     st.dataframe(pred_df)
                     
-                    # Send to Blynk if enabled
-                    if enable_blynk and future_predictions:
-                        st.subheader("🌐 Sending ALL Prediction Data to Blynk V0")
-                        with st.spinner('Sending ALL 24 hours of prediction data to Blynk V0...'):
-                            success = send_all_predictions_to_v0(future_predictions, selected_targets, list(all_models.keys()))
-                            
-                            if success:
-                                st.success("✅ ALL prediction data successfully sent to Blynk V0!")
-                                
-                                # Show how to retrieve the data
-                                st.info("""
-                                **To retrieve this data from your website:**
-                                ```javascript
-                                fetch('https://blynk.cloud/external/api/get?token=pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7&V0')
-                                  .then(response => response.json())
-                                  .then(data => {
-                                    console.log('24-hour predictions:', data);
-                                  });
-                                ```
-                                """)
+                    # Create JSON data
+                    st.subheader("📄 JSON Data Format")
+                    prediction_json = create_prediction_json(future_predictions, selected_targets, list(all_models.keys()))
+                    
+                    if prediction_json:
+                        # Display JSON data
+                        st.json(prediction_json)
+                        
+                        # Download JSON button
+                        download_json(prediction_json, "air_quality_predictions.json")
+                        
+                        # Send to Blynk if enabled
+                        if enable_blynk:
+                            st.subheader("🌐 Sending to Blynk API")
+                            if st.button("Send JSON Data to Blynk V0"):
+                                with st.spinner('Sending JSON data to Blynk V0...'):
+                                    success = send_json_to_blynk_v0(prediction_json)
+                                    
+                                    if success:
+                                        st.success("✅ JSON data successfully sent to Blynk V0!")
+                                        
+                                        # Show how to retrieve the data
+                                        st.info("""
+                                        **To retrieve this data from your website:**
+                                        ```javascript
+                                        fetch('https://blynk.cloud/external/api/get?token=pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7&V0')
+                                          .then(response => response.json())
+                                          .then(data => {
+                                            console.log('24-hour predictions:', data);
+                                          });
+                                        ```
+                                        """)
                     
         except Exception as e:
             st.error(f"Error generating predictions: {str(e)}")
