@@ -3,7 +3,6 @@ supabase
 pandas
 numpy
 scikit-learn
-xgboost
 tensorflow
 plotly
 matplotlib
