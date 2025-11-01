@@ -20,23 +20,34 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from datetime import datetime, timedelta
 
-# Supabase configuration
-SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"
-
-# Blynk API configuration
-BLYNK_API_TOKEN = "pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7"
-BLYNK_UPDATE_BASE_URL = "https://blynk.cloud/external/api/update"
-BLYNK_GET_BASE_URL = "https://blynk.cloud/external/api/get"
-
+# Initialize Supabase client with secrets
 @st.cache_resource
 def init_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        # Use Streamlit secrets for secure credential management
+        supabase_url = st.secrets.get("SUPABASE_URL", "")
+        supabase_key = st.secrets.get("SUPABASE_KEY", "")
+        
+        if not supabase_url or not supabase_key:
+            st.error("Supabase credentials not found. Please configure them in Streamlit secrets.")
+            return None
+            
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Error initializing Supabase: {e}")
+        return None
+
+# Blynk API configuration - also use secrets
+def get_blynk_token():
+    return st.secrets.get("BLYNK_API_TOKEN", "")
 
 @st.cache_data(ttl=300)
 def load_data():
     try:
         supabase = init_supabase()
+        if supabase is None:
+            return pd.DataFrame()
+            
         response = supabase.table('airquality').select('*').execute()
         
         if not response.data:
@@ -377,6 +388,26 @@ def main():
     This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using **LSTM model only**.
     All predictions are exported in JSON format for easy integration with other systems.
     """)
+    
+    # Check if secrets are configured
+    if not st.secrets.get("SUPABASE_URL") or not st.secrets.get("SUPABASE_KEY"):
+        st.error("""
+        **Configuration Required**
+        
+        Please configure your Supabase credentials in Streamlit secrets:
+        
+        1. Create a `.streamlit/secrets.toml` file in your app directory
+        2. Add your credentials:
+        
+        ```toml
+        SUPABASE_URL = "your_supabase_url_here"
+        SUPABASE_KEY = "your_supabase_key_here"
+        BLYNK_API_TOKEN = "your_blynk_token_here"
+        ```
+        
+        You can find these values in your Supabase project settings.
+        """)
+        return
     
     # Load data
     with st.spinner('Loading data from Supabase...'):
