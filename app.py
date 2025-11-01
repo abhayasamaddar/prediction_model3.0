@@ -67,36 +67,6 @@ def load_data():
         st.error(f"Error loading data: {e}")
         return pd.DataFrame()
 
-def create_correlation_heatmap(df):
-    """Create correlation heatmap for air quality parameters"""
-    # Select only numeric columns for correlation
-    numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    corr_df = df[numeric_cols].corr()
-    
-    # Create heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_df.values,
-        x=corr_df.columns,
-        y=corr_df.columns,
-        colorscale='RdBu',
-        zmin=-1,
-        zmax=1,
-        text=corr_df.round(3).values,
-        texttemplate="%{text}",
-        hoverinfo="text",
-        hovertemplate="Correlation between %{x} and %{y}: %{z:.3f}<extra></extra>"
-    ))
-    
-    fig.update_layout(
-        title="Correlation Heatmap of Air Quality Parameters",
-        xaxis_title="Parameters",
-        yaxis_title="Parameters",
-        width=700,
-        height=600
-    )
-    
-    return fig, corr_df
-
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
     df_eng = df.copy()
@@ -443,44 +413,6 @@ def main():
     if st.checkbox("Show data statistics"):
         st.subheader("Data Statistics")
         st.dataframe(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].describe())
-    
-    # Correlation Analysis Section
-    st.header("📈 Correlation Analysis")
-    
-    if st.checkbox("Show Correlation Heatmap"):
-        st.subheader("Correlation Heatmap of Air Quality Parameters")
-        
-        # Create correlation heatmap
-        corr_fig, corr_matrix = create_correlation_heatmap(df)
-        st.plotly_chart(corr_fig, use_container_width=True)
-        
-        # Display correlation insights
-        st.subheader("📋 Correlation Insights")
-        
-        # Find strong correlations (absolute value > 0.7)
-        strong_correlations = []
-        for i in range(len(corr_matrix.columns)):
-            for j in range(i+1, len(corr_matrix.columns)):
-                corr_value = corr_matrix.iloc[i, j]
-                if abs(corr_value) > 0.7:
-                    strong_correlations.append({
-                        'Parameter 1': corr_matrix.columns[i],
-                        'Parameter 2': corr_matrix.columns[j],
-                        'Correlation': f"{corr_value:.3f}",
-                        'Strength': 'Strong Positive' if corr_value > 0 else 'Strong Negative'
-                    })
-        
-        if strong_correlations:
-            st.write("**Strong Correlations (|r| > 0.7):**")
-            strong_corr_df = pd.DataFrame(strong_correlations)
-            st.dataframe(strong_corr_df)
-        else:
-            st.info("No strong correlations (|r| > 0.7) found between parameters.")
-        
-        # Display correlation matrix as table
-        if st.checkbox("Show Correlation Matrix Table"):
-            st.subheader("Correlation Matrix")
-            st.dataframe(corr_matrix.style.background_gradient(cmap='RdBu', vmin=-1, vmax=1))
     
     st.sidebar.header("LSTM Configuration")
     
