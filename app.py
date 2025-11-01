@@ -450,27 +450,44 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
     return plots
 
 def send_to_blynk(predictions_data, selected_targets, models_to_send):
-    """Send prediction data to Blynk API as JSON in v0 parameter"""
+    """Send all 24 hours of prediction data to Blynk API as JSON in v0 parameter"""
     try:
-        # Create a JSON object with the first hour's predictions
+        # Create a JSON object with all 24 hours of predictions
         if models_to_send and len(models_to_send) > 0:
             primary_model = models_to_send[0]
             
-            # Get the first hour prediction for all selected targets
-            blynk_data = {}
-            for target in selected_targets:
-                if (primary_model in predictions_data and 
-                    target in predictions_data[primary_model] and 
-                    len(predictions_data[primary_model][target]) > 0):
-                    value = predictions_data[primary_model][target][0]
-                    if not np.isnan(value):
-                        blynk_data[target] = float(value)
+            # Create a list to store all 24 hours of predictions
+            all_hours_data = []
             
-            # Add default values for rain and light if they don't exist
-            if 'rain' not in blynk_data:
-                blynk_data['rain'] = 1  # Default value
-            if 'light' not in blynk_data:
-                blynk_data['light'] = 10  # Default value
+            for hour in range(24):  # For each of the next 24 hours
+                hour_data = {}
+                
+                # Get predictions for all selected targets for this hour
+                for target in selected_targets:
+                    if (primary_model in predictions_data and 
+                        target in predictions_data[primary_model] and 
+                        len(predictions_data[primary_model][target]) > hour):
+                        value = predictions_data[primary_model][target][hour]
+                        if not np.isnan(value):
+                            hour_data[target] = float(value)
+                
+                # Add default values for rain and light if they don't exist
+                if 'rain' not in hour_data:
+                    hour_data['rain'] = 1  # Default value
+                if 'light' not in hour_data:
+                    hour_data['light'] = 10  # Default value
+                
+                # Add timestamp for this hour
+                hour_data['hour'] = hour + 1
+                
+                all_hours_data.append(hour_data)
+            
+            # Create the main data structure
+            blynk_data = {
+                "predictions_24h": all_hours_data,
+                "timestamp": datetime.now().isoformat(),
+                "model_used": primary_model
+            }
             
             # Convert to JSON string
             json_data = json.dumps(blynk_data)
@@ -482,8 +499,15 @@ def send_to_blynk(predictions_data, selected_targets, models_to_send):
             response = requests.get(url)
             
             if response.status_code == 200:
-                st.success("✅ Prediction data successfully sent to Blynk!")
-                st.info(f"Sent data: {json_data}")
+                st.success("✅ All 24 hours of prediction data successfully sent to Blynk!")
+                
+                # Show summary of sent data
+                st.info(f"Sent {len(all_hours_data)} hours of predictions using {primary_model} model")
+                
+                # Display a preview of the data
+                with st.expander("View data sent to Blynk"):
+                    st.json(blynk_data)
+                
                 return True
             else:
                 st.error(f"❌ Failed to send data to Blynk. Status code: {response.status_code}")
@@ -495,6 +519,57 @@ def send_to_blynk(predictions_data, selected_targets, models_to_send):
             
     except Exception as e:
         st.error(f"❌ Error sending data to Blynk: {e}")
+        return False
+
+def send_individual_hours_to_blynk(predictions_data, selected_targets, models_to_send):
+    """Alternative: Send each hour to separate virtual pins (v0, v1, ..., v23)"""
+    try:
+        if models_to_send and len(models_to_send) > 0:
+            primary_model = models_to_send[0]
+            success_count = 0
+            
+            for hour in range(24):  # For each of the next 24 hours
+                hour_data = {}
+                
+                # Get predictions for all selected targets for this hour
+                for target in selected_targets:
+                    if (primary_model in predictions_data and 
+                        target in predictions_data[primary_model] and 
+                        len(predictions_data[primary_model][target]) > hour):
+                        value = predictions_data[primary_model][target][hour]
+                        if not np.isnan(value):
+                            hour_data[target] = float(value)
+                
+                # Add default values for rain and light if they don't exist
+                if 'rain' not in hour_data:
+                    hour_data['rain'] = 1
+                if 'light' not in hour_data:
+                    hour_data['light'] = 10
+                
+                # Convert to JSON string
+                json_data = json.dumps(hour_data)
+                
+                # Create the full URL with JSON in v{hour} parameter
+                url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&v{hour}={json_data}"
+                
+                # Send the request
+                response = requests.get(url)
+                
+                if response.status_code == 200:
+                    success_count += 1
+            
+            if success_count == 24:
+                st.success(f"✅ All 24 hours sent to individual Blynk virtual pins (v0-v23)!")
+                return True
+            else:
+                st.warning(f"Sent {success_count}/24 hours to Blynk")
+                return success_count > 0
+        else:
+            st.warning("No valid prediction data to send to Blynk")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error sending individual hours to Blynk: {e}")
         return False
 
 def get_blynk_data():
@@ -596,6 +671,12 @@ def main():
     # Blynk API Configuration
     st.sidebar.header("🌐 Blynk API Configuration")
     enable_blynk = st.sidebar.checkbox("Enable Blynk API Integration", value=True)
+    
+    blynk_send_method = st.sidebar.radio(
+        "Blynk Send Method:",
+        ["Single JSON (all 24 hours in v0)", "Individual Pins (v0-v23)"],
+        index=0
+    )
     
     if enable_blynk:
         st.sidebar.info("Blynk API is configured with your token")
@@ -823,8 +904,12 @@ def main():
                     # Send to Blynk if enabled
                     if enable_blynk and future_predictions:
                         st.subheader("🌐 Sending to Blynk API")
-                        with st.spinner('Sending prediction data to Blynk...'):
-                            success = send_to_blynk(future_predictions, selected_targets, list(all_models.keys()))
+                        with st.spinner('Sending 24 hours of prediction data to Blynk...'):
+                            if blynk_send_method == "Single JSON (all 24 hours in v0)":
+                                success = send_to_blynk(future_predictions, selected_targets, list(all_models.keys()))
+                            else:
+                                success = send_individual_hours_to_blynk(future_predictions, selected_targets, list(all_models.keys()))
+                            
                             if success:
                                 st.success("✅ Data successfully sent to Blynk API!")
                                 
