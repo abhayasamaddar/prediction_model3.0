@@ -53,14 +53,17 @@ def load_data():
         # Convert numeric columns
         numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
         for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Fill missing values with forward fill and then backward fill
-        df[numeric_cols] = df[numeric_cols].fillna(method='ffill').fillna(method='bfill')
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(method='ffill').fillna(method='bfill')
         
         # If there are still missing values, fill with column mean
         for col in numeric_cols:
-            if df[col].isna().any():
+            if col in df.columns and df[col].isna().any():
                 df[col] = df[col].fillna(df[col].mean())
         
         return df
@@ -70,151 +73,170 @@ def load_data():
 
 def plot_correlation_heatmap(df):
     """Create a correlation heatmap for air quality parameters"""
-    # Select only numeric columns for correlation
-    numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    
-    # Check if all required columns exist
-    available_cols = [col for col in numeric_cols if col in df.columns]
-    
-    if len(available_cols) < 2:
-        st.warning("Not enough numeric columns for correlation analysis.")
+    try:
+        # Select only numeric columns for correlation
+        numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+        
+        # Check if all required columns exist
+        available_cols = [col for col in numeric_cols if col in df.columns]
+        
+        if len(available_cols) < 2:
+            st.warning("Not enough numeric columns for correlation analysis.")
+            return None
+        
+        # Calculate correlation matrix
+        corr_matrix = df[available_cols].corr()
+        
+        # Create heatmap
+        fig = px.imshow(
+            corr_matrix,
+            text_auto=True,
+            aspect="auto",
+            color_continuous_scale='RdBu_r',
+            title="Correlation Heatmap of Air Quality Parameters"
+        )
+        
+        # Update layout
+        fig.update_layout(
+            width=800,
+            height=600,
+            title_x=0.5
+        )
+        
+        # Update colorbar
+        fig.update_coloraxes(colorbar_title="Correlation")
+        
+        return fig
+    except Exception as e:
+        st.error(f"Error creating correlation heatmap: {e}")
         return None
-    
-    # Calculate correlation matrix
-    corr_matrix = df[available_cols].corr()
-    
-    # Create heatmap
-    fig = px.imshow(
-        corr_matrix,
-        text_auto=True,
-        aspect="auto",
-        color_continuous_scale='RdBu_r',
-        title="Correlation Heatmap of Air Quality Parameters"
-    )
-    
-    # Update layout
-    fig.update_layout(
-        width=800,
-        height=600,
-        title_x=0.5
-    )
-    
-    # Update colorbar
-    fig.update_coloraxes(colorbar_title="Correlation")
-    
-    return fig
 
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
-    df_eng = df.copy()
-    
-    # Determine safe number of lags based on data length
-    safe_n_lags = min(n_lags, len(df_eng) - 1)
-    if safe_n_lags < 1:
-        st.warning("Not enough data for lag features. Using basic features only.")
-        safe_n_lags = 0
-    
-    # Create lag features only if we have enough data
-    for col in target_columns:
-        for lag in range(1, safe_n_lags + 1):
-            df_eng[f'{col}_lag_{lag}'] = df_eng[col].shift(lag)
-    
-    # Add time-based features
-    df_eng['hour'] = df_eng['created_at'].dt.hour
-    df_eng['day_of_week'] = df_eng['created_at'].dt.dayofweek
-    df_eng['month'] = df_eng['created_at'].dt.month
-    df_eng['day_of_year'] = df_eng['created_at'].dt.dayofyear
-    
-    # Add rolling statistics (if enough data)
-    if len(df_eng) > 5:
+    try:
+        df_eng = df.copy()
+        
+        # Determine safe number of lags based on data length
+        safe_n_lags = min(n_lags, len(df_eng) - 1)
+        if safe_n_lags < 1:
+            st.warning("Not enough data for lag features. Using basic features only.")
+            safe_n_lags = 0
+        
+        # Create lag features only if we have enough data
         for col in target_columns:
-            df_eng[f'{col}_rolling_mean_3'] = df_eng[col].rolling(window=3, min_periods=1).mean()
-            df_eng[f'{col}_rolling_std_3'] = df_eng[col].rolling(window=3, min_periods=1).std()
-    
-    # Fill NaN values created by lag features and rolling stats
-    numeric_columns = df_eng.select_dtypes(include=[np.number]).columns
-    df_eng[numeric_columns] = df_eng[numeric_columns].fillna(method='bfill').fillna(method='ffill')
-    
-    # If there are still missing values, fill with column mean
-    for col in numeric_columns:
-        if df_eng[col].isna().any():
-            df_eng[col] = df_eng[col].fillna(df_eng[col].mean())
-    
-    # Drop rows that still have NaN values (should be very few if any)
-    initial_count = len(df_eng)
-    df_eng = df_eng.dropna()
-    final_count = len(df_eng)
-    
-    if initial_count != final_count:
-        st.warning(f"Dropped {initial_count - final_count} rows with missing values after feature engineering.")
-    
-    return df_eng
+            if col in df_eng.columns:
+                for lag in range(1, safe_n_lags + 1):
+                    df_eng[f'{col}_lag_{lag}'] = df_eng[col].shift(lag)
+        
+        # Add time-based features
+        if 'created_at' in df_eng.columns:
+            df_eng['hour'] = df_eng['created_at'].dt.hour
+            df_eng['day_of_week'] = df_eng['created_at'].dt.dayofweek
+            df_eng['month'] = df_eng['created_at'].dt.month
+            df_eng['day_of_year'] = df_eng['created_at'].dt.dayofyear
+        
+        # Add rolling statistics (if enough data)
+        if len(df_eng) > 5:
+            for col in target_columns:
+                if col in df_eng.columns:
+                    df_eng[f'{col}_rolling_mean_3'] = df_eng[col].rolling(window=3, min_periods=1).mean()
+                    df_eng[f'{col}_rolling_std_3'] = df_eng[col].rolling(window=3, min_periods=1).std()
+        
+        # Fill NaN values created by lag features and rolling stats
+        numeric_columns = df_eng.select_dtypes(include=[np.number]).columns
+        df_eng[numeric_columns] = df_eng[numeric_columns].fillna(method='bfill').fillna(method='ffill')
+        
+        # If there are still missing values, fill with column mean
+        for col in numeric_columns:
+            if df_eng[col].isna().any():
+                df_eng[col] = df_eng[col].fillna(df_eng[col].mean())
+        
+        # Drop rows that still have NaN values (should be very few if any)
+        initial_count = len(df_eng)
+        df_eng = df_eng.dropna()
+        final_count = len(df_eng)
+        
+        if initial_count != final_count:
+            st.warning(f"Dropped {initial_count - final_count} rows with missing values after feature engineering.")
+        
+        return df_eng
+    except Exception as e:
+        st.error(f"Error in feature engineering: {e}")
+        return pd.DataFrame()
 
 def prepare_lstm_data(df, target_columns, sequence_length=10):
     """Prepare data for LSTM model with safe sequence length"""
-    features = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    X, y = [], []
-    
-    # Use safe sequence length
-    safe_sequence_length = min(sequence_length, len(df) - 1)
-    if safe_sequence_length < 2:
+    try:
+        features = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+        X, y = [], []
+        
+        # Use safe sequence length
+        safe_sequence_length = min(sequence_length, len(df) - 1)
+        if safe_sequence_length < 2:
+            return np.array([]), np.array([])
+        
+        for i in range(safe_sequence_length, len(df)):
+            X.append(df[features].iloc[i-safe_sequence_length:i].values)
+            y.append(df[target_columns].iloc[i].values)
+        
+        return np.array(X), np.array(y)
+    except Exception as e:
+        st.error(f"Error preparing LSTM data: {e}")
         return np.array([]), np.array([])
-    
-    for i in range(safe_sequence_length, len(df)):
-        X.append(df[features].iloc[i-safe_sequence_length:i].values)
-        y.append(df[target_columns].iloc[i].values)
-    
-    return np.array(X), np.array(y)
 
 def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     """Train LSTM model using all data"""
-    # Use all data for training
-    X_all = np.vstack([X_train, X_test])
-    y_all = np.vstack([y_train, y_test])
-    
-    # Scale the data
-    scaler_X = StandardScaler()
-    scaler_y = StandardScaler()
-    
-    # Reshape for scaling
-    X_all_reshaped = X_all.reshape(-1, X_all.shape[2])
-    
-    X_all_scaled = scaler_X.fit_transform(X_all_reshaped).reshape(X_all.shape)
-    y_all_scaled = scaler_y.fit_transform(y_all)
-    
-    # Build LSTM model
-    model = Sequential([
-        LSTM(32, return_sequences=True, input_shape=(X_all.shape[1], X_all.shape[2])),
-        Dropout(0.2),
-        LSTM(32, return_sequences=False),
-        Dropout(0.2),
-        Dense(16),
-        Dense(len(target_columns))
-    ])
-    
-    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
-    
-    # Train model
-    history = model.fit(
-        X_all_scaled, y_all_scaled,
-        epochs=30,
-        batch_size=16,
-        validation_split=0.2,
-        verbose=0
-    )
-    
-    # Make predictions on all data
-    pred_scaled = model.predict(X_all_scaled, verbose=0)
-    predictions = scaler_y.inverse_transform(pred_scaled)
-    
-    scores = {}
-    for i, col in enumerate(target_columns):
-        scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_all[:, i], predictions[:, i])),
-            'r2': r2_score(y_all[:, i], predictions[:, i])
-        }
-    
-    return model, predictions, scores, history, scaler_X, scaler_y
+    try:
+        # Use all data for training
+        X_all = np.vstack([X_train, X_test])
+        y_all = np.vstack([y_train, y_test])
+        
+        # Scale the data
+        scaler_X = StandardScaler()
+        scaler_y = StandardScaler()
+        
+        # Reshape for scaling
+        X_all_reshaped = X_all.reshape(-1, X_all.shape[2])
+        
+        X_all_scaled = scaler_X.fit_transform(X_all_reshaped).reshape(X_all.shape)
+        y_all_scaled = scaler_y.fit_transform(y_all)
+        
+        # Build LSTM model
+        model = Sequential([
+            LSTM(32, return_sequences=True, input_shape=(X_all.shape[1], X_all.shape[2])),
+            Dropout(0.2),
+            LSTM(32, return_sequences=False),
+            Dropout(0.2),
+            Dense(16),
+            Dense(len(target_columns))
+        ])
+        
+        model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        
+        # Train model
+        history = model.fit(
+            X_all_scaled, y_all_scaled,
+            epochs=30,
+            batch_size=16,
+            validation_split=0.2,
+            verbose=0
+        )
+        
+        # Make predictions on all data
+        pred_scaled = model.predict(X_all_scaled, verbose=0)
+        predictions = scaler_y.inverse_transform(pred_scaled)
+        
+        scores = {}
+        for i, col in enumerate(target_columns):
+            scores[col] = {
+                'rmse': np.sqrt(mean_squared_error(y_all[:, i], predictions[:, i])),
+                'r2': r2_score(y_all[:, i], predictions[:, i])
+            }
+        
+        return model, predictions, scores, history, scaler_X, scaler_y
+    except Exception as e:
+        st.error(f"Error training LSTM: {e}")
+        return None, None, {}, None, None, None
 
 def generate_lstm_future_predictions(model_data, df_eng, selected_targets, hours=168):
     """Generate future predictions for the next hours using LSTM"""
@@ -248,114 +270,117 @@ def generate_lstm_future_predictions(model_data, df_eng, selected_targets, hours
 
 def create_prediction_plots(df, future_predictions, selected_targets):
     """Create hourly and weekly prediction plots"""
-    
-    # Generate future timestamps
-    last_timestamp = df['created_at'].iloc[-1]
-    if future_predictions and selected_targets and selected_targets[0] in future_predictions:
-        future_hours = len(future_predictions[selected_targets[0]])
-        future_timestamps = [last_timestamp + timedelta(hours=i) for i in range(1, future_hours + 1)]
-    else:
-        future_timestamps = []
-    
-    plots = {}
-    
-    for target in selected_targets:
-        # Create subplots for actual vs predicted
-        fig = make_subplots(
-            rows=2, cols=1,
-            subplot_titles=(f'Hourly Predictions - {target}', f'Weekly Overview - {target}'),
-            vertical_spacing=0.1
-        )
+    try:
+        # Generate future timestamps
+        last_timestamp = df['created_at'].iloc[-1]
+        if future_predictions and selected_targets and selected_targets[0] in future_predictions:
+            future_hours = len(future_predictions[selected_targets[0]])
+            future_timestamps = [last_timestamp + timedelta(hours=i) for i in range(1, future_hours + 1)]
+        else:
+            future_timestamps = []
         
-        # Plot 1: Hourly predictions (first 24 hours)
-        # Actual data (last 24 hours if available)
-        display_hours = min(24, len(df))
-        if display_hours > 0:
-            last_actual = df.tail(display_hours)
-            fig.add_trace(
-                go.Scatter(
-                    x=last_actual['created_at'],
-                    y=last_actual[target],
-                    mode='lines+markers',
-                    name='Actual (Recent)',
-                    line=dict(color='blue', width=2)
-                ),
-                row=1, col=1
+        plots = {}
+        
+        for target in selected_targets:
+            # Create subplots for actual vs predicted
+            fig = make_subplots(
+                rows=2, cols=1,
+                subplot_titles=(f'Hourly Predictions - {target}', f'Weekly Overview - {target}'),
+                vertical_spacing=0.1
             )
-        
-        # Future predictions (first 24 hours)
-        if target in future_predictions and future_predictions[target]:
-            pred_values = future_predictions[target][:24]
-            pred_timestamps = future_timestamps[:24]
             
-            # Filter out NaN values
-            valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-            if valid_indices:
-                valid_pred = [pred_values[j] for j in valid_indices]
-                valid_times = [pred_timestamps[j] for j in valid_indices]
-                
+            # Plot 1: Hourly predictions (first 24 hours)
+            # Actual data (last 24 hours if available)
+            display_hours = min(24, len(df))
+            if display_hours > 0:
+                last_actual = df.tail(display_hours)
                 fig.add_trace(
                     go.Scatter(
-                        x=valid_times,
-                        y=valid_pred,
+                        x=last_actual['created_at'],
+                        y=last_actual[target],
                         mode='lines+markers',
-                        name='Predicted LSTM',
-                        line=dict(color='red', width=2, dash='dash')
+                        name='Actual (Recent)',
+                        line=dict(color='blue', width=2)
                     ),
                     row=1, col=1
                 )
-        
-        # Plot 2: Weekly overview (all 168 hours)
-        # Recent actual data
-        display_week = min(168, len(df))
-        if display_week > 0:
-            last_week_actual = df.tail(display_week)
-            fig.add_trace(
-                go.Scatter(
-                    x=last_week_actual['created_at'],
-                    y=last_week_actual[target],
-                    mode='lines',
-                    name='Actual (Recent)',
-                    line=dict(color='blue', width=2)
-                ),
-                row=2, col=1
-            )
-        
-        # Future predictions (all 168 hours)
-        if target in future_predictions and future_predictions[target]:
-            pred_values = future_predictions[target]
             
-            # Filter out NaN values
-            valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-            if valid_indices:
-                valid_pred = [pred_values[j] for j in valid_indices]
-                valid_times = [future_timestamps[j] for j in valid_indices]
+            # Future predictions (first 24 hours)
+            if target in future_predictions and future_predictions[target]:
+                pred_values = future_predictions[target][:24]
+                pred_timestamps = future_timestamps[:24]
                 
+                # Filter out NaN values
+                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+                if valid_indices:
+                    valid_pred = [pred_values[j] for j in valid_indices]
+                    valid_times = [pred_timestamps[j] for j in valid_indices]
+                    
+                    fig.add_trace(
+                        go.Scatter(
+                            x=valid_times,
+                            y=valid_pred,
+                            mode='lines+markers',
+                            name='Predicted LSTM',
+                            line=dict(color='red', width=2, dash='dash')
+                        ),
+                        row=1, col=1
+                    )
+            
+            # Plot 2: Weekly overview (all 168 hours)
+            # Recent actual data
+            display_week = min(168, len(df))
+            if display_week > 0:
+                last_week_actual = df.tail(display_week)
                 fig.add_trace(
                     go.Scatter(
-                        x=valid_times,
-                        y=valid_pred,
+                        x=last_week_actual['created_at'],
+                        y=last_week_actual[target],
                         mode='lines',
-                        name='Predicted LSTM',
-                        line=dict(color='red', width=2, dash='dash')
+                        name='Actual (Recent)',
+                        line=dict(color='blue', width=2)
                     ),
                     row=2, col=1
                 )
+            
+            # Future predictions (all 168 hours)
+            if target in future_predictions and future_predictions[target]:
+                pred_values = future_predictions[target]
+                
+                # Filter out NaN values
+                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+                if valid_indices:
+                    valid_pred = [pred_values[j] for j in valid_indices]
+                    valid_times = [future_timestamps[j] for j in valid_indices]
+                    
+                    fig.add_trace(
+                        go.Scatter(
+                            x=valid_times,
+                            y=valid_pred,
+                            mode='lines',
+                            name='Predicted LSTM',
+                            line=dict(color='red', width=2, dash='dash')
+                        ),
+                        row=2, col=1
+                    )
+            
+            fig.update_layout(
+                height=800,
+                title_text=f"LSTM Prediction Analysis for {target}",
+                showlegend=True
+            )
+            
+            fig.update_xaxes(title_text="Time", row=1, col=1)
+            fig.update_xaxes(title_text="Time", row=2, col=1)
+            fig.update_yaxes(title_text=target, row=1, col=1)
+            fig.update_yaxes(title_text=target, row=2, col=1)
+            
+            plots[target] = fig
         
-        fig.update_layout(
-            height=800,
-            title_text=f"LSTM Prediction Analysis for {target}",
-            showlegend=True
-        )
-        
-        fig.update_xaxes(title_text="Time", row=1, col=1)
-        fig.update_xaxes(title_text="Time", row=2, col=1)
-        fig.update_yaxes(title_text=target, row=1, col=1)
-        fig.update_yaxes(title_text=target, row=2, col=1)
-        
-        plots[target] = fig
-    
-    return plots
+        return plots
+    except Exception as e:
+        st.error(f"Error creating prediction plots: {e}")
+        return {}
 
 def create_lstm_prediction_json(future_predictions, selected_targets):
     """Create JSON format of LSTM prediction data"""
@@ -397,13 +422,16 @@ def create_lstm_prediction_json(future_predictions, selected_targets):
 
 def download_json(data, filename="lstm_prediction_data.json"):
     """Create download button for JSON data"""
-    json_str = json.dumps(data, indent=2)
-    st.download_button(
-        label="📥 Download LSTM Prediction Data as JSON",
-        data=json_str,
-        file_name=filename,
-        mime="application/json"
-    )
+    try:
+        json_str = json.dumps(data, indent=2)
+        st.download_button(
+            label="📥 Download LSTM Prediction Data as JSON",
+            data=json_str,
+            file_name=filename,
+            mime="application/json"
+        )
+    except Exception as e:
+        st.error(f"Error creating download button: {e}")
 
 def main():
     st.set_page_config(page_title="LSTM Air Quality Prediction", layout="wide")
@@ -431,16 +459,23 @@ def main():
         st.metric("Total Records", len(df))
     
     with col2:
-        missing_data = df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].isna().sum().sum()
-        st.metric("Missing Values", missing_data)
+        missing_data = 0
+        for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']:
+            if col in df.columns:
+                missing_data += df[col].isna().sum()
+        st.metric("Missing Values", int(missing_data))
     
     with col3:
-        completeness = (1 - missing_data / (len(df) * 6)) * 100
+        total_cells = len(df) * 6
+        completeness = (1 - missing_data / total_cells) * 100 if total_cells > 0 else 0
         st.metric("Data Completeness", f"{completeness:.1f}%")
     
     with col4:
-        date_range = f"{df['created_at'].min().strftime('%Y-%m-%d')} to {df['created_at'].max().strftime('%Y-%m-%d')}"
-        st.metric("Date Range", date_range)
+        if 'created_at' in df.columns and len(df) > 0:
+            date_range = f"{df['created_at'].min().strftime('%Y-%m-%d')} to {df['created_at'].max().strftime('%Y-%m-%d')}"
+            st.metric("Date Range", date_range)
+        else:
+            st.metric("Date Range", "N/A")
     
     # Show data preview
     if st.checkbox("Show raw data preview"):
@@ -449,7 +484,11 @@ def main():
     # Show data statistics
     if st.checkbox("Show data statistics"):
         st.subheader("Data Statistics")
-        st.dataframe(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].describe())
+        numeric_cols = [col for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10'] if col in df.columns]
+        if numeric_cols:
+            st.dataframe(df[numeric_cols].describe())
+        else:
+            st.warning("No numeric columns found for statistics.")
     
     # Correlation Heatmap
     st.header("📈 Correlation Analysis")
@@ -465,42 +504,21 @@ def main():
     corr_fig = plot_correlation_heatmap(df)
     if corr_fig:
         st.plotly_chart(corr_fig, use_container_width=True)
-        
-        # Display correlation insights
-        st.subheader("🔍 Correlation Insights")
-        
-        # Calculate correlation matrix for insights
-        numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-        available_cols = [col for col in numeric_cols if col in df.columns]
-        corr_matrix = df[available_cols].corr()
-        
-        # Find strongest correlations
-        insights = []
-        for i in range(len(corr_matrix.columns)):
-            for j in range(i+1, len(corr_matrix.columns)):
-                corr_value = corr_matrix.iloc[i, j]
-                if abs(corr_value) > 0.5:  # Strong correlation threshold
-                    col1 = corr_matrix.columns[i]
-                    col2 = corr_matrix.columns[j]
-                    insights.append((col1, col2, corr_value))
-        
-        if insights:
-            st.write("**Strong Correlations Found:**")
-            for col1, col2, corr_value in insights:
-                direction = "positive" if corr_value > 0 else "negative"
-                strength = "strong" if abs(corr_value) > 0.7 else "moderate"
-                st.write(f"- **{col1}** and **{col2}**: {strength} {direction} correlation ({corr_value:.3f})")
-        else:
-            st.info("No strong correlations (|r| > 0.5) found between parameters.")
     
     st.sidebar.header("LSTM Configuration")
     
     # Target selection
     target_columns = ['pm25', 'pm10', 'co2', 'co', 'temperature', 'humidity']
+    available_targets = [col for col in target_columns if col in df.columns]
+    
+    if not available_targets:
+        st.error("No target columns available in the data.")
+        return
+    
     selected_targets = st.sidebar.multiselect(
         "Select targets to predict:",
-        target_columns,
-        default=target_columns
+        available_targets,
+        default=available_targets[:3] if len(available_targets) >= 3 else available_targets
     )
     
     if not selected_targets:
@@ -522,7 +540,7 @@ def main():
     with st.spinner('Creating features for LSTM...'):
         df_eng = create_features(df, selected_targets, n_lags=2)
     
-    if len(df_eng) == 0:
+    if df_eng.empty:
         st.error("No data available after feature engineering.")
         return
     
@@ -547,26 +565,28 @@ def main():
     
     # Train LSTM model
     with st.spinner('Training LSTM model...'):
-        try:
-            model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
-                X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
-            )
-            
-            # Display LSTM model scores
-            st.subheader("LSTM Model Performance")
+        model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
+            X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
+        )
+        
+        if model is None:
+            st.error("Failed to train LSTM model.")
+            return
+        
+        # Display LSTM model scores
+        st.subheader("LSTM Model Performance")
+        if scores:
             scores_df = pd.DataFrame(scores).T
             scores_df.columns = ['RMSE', 'R² Score']
             formatted_scores = scores_df.copy()
             for col in formatted_scores.columns:
                 formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
             st.dataframe(formatted_scores)
-            
-            # Store the trained model
-            lstm_model_data = (model, scaler_X, scaler_y)
-            
-        except Exception as e:
-            st.error(f"Error training LSTM model: {str(e)}")
-            return
+        else:
+            st.warning("No model scores available.")
+        
+        # Store the trained model
+        lstm_model_data = (model, scaler_X, scaler_y)
     
     # Future prediction with plots
     st.header("🔮 LSTM Future Predictions")
@@ -620,6 +640,10 @@ def main():
                         
                         st.success("✅ LSTM predictions generated successfully!")
                         st.info("You can download the JSON data using the button above.")
+                    else:
+                        st.error("Failed to create JSON data.")
+                else:
+                    st.error("No prediction data available.")
                     
         except Exception as e:
             st.error(f"Error generating LSTM predictions: {str(e)}")
