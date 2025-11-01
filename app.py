@@ -12,13 +12,9 @@ import urllib.parse
 warnings.filterwarnings('ignore')
 
 # Machine Learning imports
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.svm import SVR
-from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
-import xgboost as xgb
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
@@ -133,92 +129,6 @@ def prepare_lstm_data(df, target_columns, sequence_length=10):
     
     return np.array(X), np.array(y)
 
-def train_random_forest(X_train, X_test, y_train, y_test, target_columns):
-    """Train Random Forest model using all data"""
-    models = {}
-    predictions = {}
-    scores = {}
-    
-    # Use all data for training
-    X_all = np.vstack([X_train, X_test])
-    y_all = np.vstack([y_train, y_test])
-    
-    for i, col in enumerate(target_columns):
-        rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
-        rf.fit(X_all, y_all[:, i])
-        
-        # Predict on all data
-        pred = rf.predict(X_all)
-        
-        models[col] = rf
-        predictions[col] = pred
-        scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_all[:, i], pred)),
-            'r2': r2_score(y_all[:, i], pred)
-        }
-    
-    return models, predictions, scores
-
-def train_xgboost(X_train, X_test, y_train, y_test, target_columns):
-    """Train XGBoost model using all data"""
-    models = {}
-    predictions = {}
-    scores = {}
-    
-    # Use all data for training
-    X_all = np.vstack([X_train, X_test])
-    y_all = np.vstack([y_train, y_test])
-    
-    for i, col in enumerate(target_columns):
-        xgb_model = xgb.XGBRegressor(
-            n_estimators=50,
-            learning_rate=0.1,
-            random_state=42,
-            n_jobs=-1
-        )
-        xgb_model.fit(X_all, y_all[:, i])
-        
-        # Predict on all data
-        pred = xgb_model.predict(X_all)
-        
-        models[col] = xgb_model
-        predictions[col] = pred
-        scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_all[:, i], pred)),
-            'r2': r2_score(y_all[:, i], pred)
-        }
-    
-    return models, predictions, scores
-
-def train_svm(X_train, X_test, y_train, y_test, target_columns):
-    """Train SVM model using all data"""
-    # Use all data for training
-    X_all = np.vstack([X_train, X_test])
-    y_all = np.vstack([y_train, y_test])
-    
-    # Scale the data for SVM
-    scaler_X = StandardScaler()
-    scaler_y = StandardScaler()
-    
-    X_all_scaled = scaler_X.fit_transform(X_all)
-    y_all_scaled = scaler_y.fit_transform(y_all)
-    
-    # Use MultiOutputRegressor for multiple targets
-    svm_model = MultiOutputRegressor(SVR(kernel='rbf', C=1.0))
-    svm_model.fit(X_all_scaled, y_all_scaled)
-    
-    pred_scaled = svm_model.predict(X_all_scaled)
-    predictions = scaler_y.inverse_transform(pred_scaled)
-    
-    scores = {}
-    for i, col in enumerate(target_columns):
-        scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_all[:, i], predictions[:, i])),
-            'r2': r2_score(y_all[:, i], predictions[:, i])
-        }
-    
-    return svm_model, predictions, scores, scaler_X, scaler_y
-
 def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     """Train LSTM model using all data"""
     # Use all data for training
@@ -269,80 +179,46 @@ def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     
     return model, predictions, scores, history, scaler_X, scaler_y
 
-def generate_future_predictions(models, df_eng, feature_cols, selected_targets, hours=168):
-    """Generate future predictions for the next hours"""
-    future_predictions = {}
-    
-    for model_key, model_data in models.items():
+def generate_lstm_future_predictions(model_data, df_eng, selected_targets, hours=168):
+    """Generate future predictions for the next hours using LSTM"""
+    try:
+        model, scaler_X, scaler_y = model_data
+        sequence_length = model.input_shape[1]
+        
         future_preds = {target: [] for target in selected_targets}
         
-        try:
-            if model_key in ['RF', 'XGB']:
-                # For traditional ML models, use recursive prediction
-                current_features = df_eng[feature_cols].iloc[-1:].copy()
-                
-                for hour in range(hours):
-                    for target in selected_targets:
-                        if target in model_data:
-                            pred = model_data[target].predict(current_features.values)[0]
-                            future_preds[target].append(pred)
-                    
-                    # Update features for next prediction (simplified)
-                    if hour < hours - 1:
-                        pass
-                    
-            elif model_key == 'SVM':
-                model, scaler_X, scaler_y = model_data
-                current_features = df_eng[feature_cols].iloc[-1:].values
-                
-                for hour in range(hours):
-                    current_scaled = scaler_X.transform(current_features)
-                    pred_scaled = model.predict(current_scaled)
-                    pred = scaler_y.inverse_transform(pred_scaled)[0]
-                    
-                    for i, target in enumerate(selected_targets):
-                        future_preds[target].append(pred[i])
-                    
-            elif model_key == 'LSTM':
-                model, scaler_X, scaler_y = model_data
-                sequence_length = model.input_shape[1]
-                
-                # Get the last sequence
-                last_sequence = df_eng[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].tail(sequence_length).values
-                
-                for hour in range(hours):
-                    sequence_scaled = scaler_X.transform(last_sequence.reshape(-1, 6)).reshape(1, sequence_length, 6)
-                    pred_scaled = model.predict(sequence_scaled, verbose=0)
-                    pred = scaler_y.inverse_transform(pred_scaled)[0]
-                    
-                    for i, target in enumerate(selected_targets):
-                        future_preds[target].append(pred[i])
-                    
-                    # Update the sequence for next prediction
-                    new_row = pred.copy()
-                    last_sequence = np.vstack([last_sequence[1:], new_row])
-                
-        except Exception as e:
-            st.warning(f"Error in prediction for {model_key}: {e}")
-            # Fill with simple trend if prediction fails
-            for target in selected_targets:
-                if len(future_preds[target]) < hours:
-                    last_value = df_eng[target].iloc[-1]
-                    # Simple linear trend
-                    for i in range(len(future_preds[target]), hours):
-                        future_preds[target].append(last_value * (1 + 0.01 * i))
+        # Get the last sequence
+        last_sequence = df_eng[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].tail(sequence_length).values
         
-        future_predictions[model_key] = future_preds
-    
-    return future_predictions
+        for hour in range(hours):
+            sequence_scaled = scaler_X.transform(last_sequence.reshape(-1, 6)).reshape(1, sequence_length, 6)
+            pred_scaled = model.predict(sequence_scaled, verbose=0)
+            pred = scaler_y.inverse_transform(pred_scaled)[0]
+            
+            for i, target in enumerate(selected_targets):
+                future_preds[target].append(pred[i])
+            
+            # Update the sequence for next prediction
+            new_row = pred.copy()
+            last_sequence = np.vstack([last_sequence[1:], new_row])
+        
+        return future_preds
+        
+    except Exception as e:
+        st.error(f"Error in LSTM prediction: {e}")
+        # Return empty predictions if error occurs
+        return {target: [] for target in selected_targets}
 
-def create_prediction_plots(df, future_predictions, selected_targets, models_to_plot):
+def create_prediction_plots(df, future_predictions, selected_targets):
     """Create hourly and weekly prediction plots"""
     
     # Generate future timestamps
     last_timestamp = df['created_at'].iloc[-1]
-    future_hours = len(list(future_predictions.values())[0][selected_targets[0]])
-    future_timestamps = [last_timestamp + timedelta(hours=i) for i in range(1, future_hours + 1)]
+    if future_predictions and selected_targets and selected_targets[0] in future_predictions:
+        future_hours = len(future_predictions[selected_targets[0]])
+        future_timestamps = [last_timestamp + timedelta(hours=i) for i in range(1, future_hours + 1)]
+    else:
+        future_timestamps = []
     
     plots = {}
     
@@ -370,29 +246,27 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
                 row=1, col=1
             )
         
-        # Future predictions for each model (first 24 hours)
-        colors = ['red', 'green', 'orange', 'purple']
-        for i, model_key in enumerate(models_to_plot):
-            if model_key in future_predictions and target in future_predictions[model_key]:
-                pred_values = future_predictions[model_key][target][:24]
-                pred_timestamps = future_timestamps[:24]
+        # Future predictions (first 24 hours)
+        if target in future_predictions and future_predictions[target]:
+            pred_values = future_predictions[target][:24]
+            pred_timestamps = future_timestamps[:24]
+            
+            # Filter out NaN values
+            valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+            if valid_indices:
+                valid_pred = [pred_values[j] for j in valid_indices]
+                valid_times = [pred_timestamps[j] for j in valid_indices]
                 
-                # Filter out NaN values
-                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-                if valid_indices:
-                    valid_pred = [pred_values[j] for j in valid_indices]
-                    valid_times = [pred_timestamps[j] for j in valid_indices]
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=valid_times,
-                            y=valid_pred,
-                            mode='lines+markers',
-                            name=f'Predicted {model_key}',
-                            line=dict(color=colors[i % len(colors)], width=2, dash='dash')
-                        ),
-                        row=1, col=1
-                    )
+                fig.add_trace(
+                    go.Scatter(
+                        x=valid_times,
+                        y=valid_pred,
+                        mode='lines+markers',
+                        name='Predicted LSTM',
+                        line=dict(color='red', width=2, dash='dash')
+                    ),
+                    row=1, col=1
+                )
         
         # Plot 2: Weekly overview (all 168 hours)
         # Recent actual data
@@ -410,31 +284,30 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
                 row=2, col=1
             )
         
-        # Future predictions for each model (all 168 hours)
-        for i, model_key in enumerate(models_to_plot):
-            if model_key in future_predictions and target in future_predictions[model_key]:
-                pred_values = future_predictions[model_key][target]
+        # Future predictions (all 168 hours)
+        if target in future_predictions and future_predictions[target]:
+            pred_values = future_predictions[target]
+            
+            # Filter out NaN values
+            valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+            if valid_indices:
+                valid_pred = [pred_values[j] for j in valid_indices]
+                valid_times = [future_timestamps[j] for j in valid_indices]
                 
-                # Filter out NaN values
-                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-                if valid_indices:
-                    valid_pred = [pred_values[j] for j in valid_indices]
-                    valid_times = [future_timestamps[j] for j in valid_indices]
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=valid_times,
-                            y=valid_pred,
-                            mode='lines',
-                            name=f'Predicted {model_key}',
-                            line=dict(color=colors[i % len(colors)], width=2, dash='dash')
-                        ),
-                        row=2, col=1
-                    )
+                fig.add_trace(
+                    go.Scatter(
+                        x=valid_times,
+                        y=valid_pred,
+                        mode='lines',
+                        name='Predicted LSTM',
+                        line=dict(color='red', width=2, dash='dash')
+                    ),
+                    row=2, col=1
+                )
         
         fig.update_layout(
             height=800,
-            title_text=f"Prediction Analysis for {target}",
+            title_text=f"LSTM Prediction Analysis for {target}",
             showlegend=True
         )
         
@@ -447,144 +320,62 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
     
     return plots
 
-def create_prediction_json(future_predictions, selected_targets, models_to_send):
-    """Create JSON format of prediction data"""
+def create_lstm_prediction_json(future_predictions, selected_targets):
+    """Create JSON format of LSTM prediction data"""
     try:
-        if models_to_send and len(models_to_send) > 0:
-            primary_model = models_to_send[0]
-            
-            # Create comprehensive data structure with all 24 hours
-            prediction_json = {
-                "timestamp": datetime.now().isoformat(),
-                "model_used": primary_model,
-                "predictions_24h": []
+        # Create comprehensive data structure with all 24 hours
+        prediction_json = {
+            "timestamp": datetime.now().isoformat(),
+            "model_used": "LSTM",
+            "predictions_24h": []
+        }
+        
+        # Add predictions for all 24 hours
+        for hour in range(24):
+            hour_data = {
+                "hour": hour + 1,
+                "predictions": {}
             }
             
-            # Add predictions for all 24 hours
-            for hour in range(24):
-                hour_data = {
-                    "hour": hour + 1,
-                    "predictions": {}
-                }
-                
-                # Get predictions for all targets for this hour
-                for target in selected_targets:
-                    if (primary_model in future_predictions and 
-                        target in future_predictions[primary_model] and 
-                        len(future_predictions[primary_model][target]) > hour):
-                        value = future_predictions[primary_model][target][hour]
-                        if not np.isnan(value):
-                            hour_data["predictions"][target] = float(value)
-                
-                # Add default values if missing
-                if 'rain' not in hour_data["predictions"]:
-                    hour_data["predictions"]['rain'] = 0
-                if 'light' not in hour_data["predictions"]:
-                    hour_data["predictions"]['light'] = 0
-                
-                prediction_json["predictions_24h"].append(hour_data)
+            # Get predictions for all targets for this hour
+            for target in selected_targets:
+                if (target in future_predictions and 
+                    len(future_predictions[target]) > hour):
+                    value = future_predictions[target][hour]
+                    if not np.isnan(value):
+                        hour_data["predictions"][target] = float(value)
             
-            return prediction_json
-        else:
-            return None
+            # Add default values if missing
+            if 'rain' not in hour_data["predictions"]:
+                hour_data["predictions"]['rain'] = 0
+            if 'light' not in hour_data["predictions"]:
+                hour_data["predictions"]['light'] = 0
             
+            prediction_json["predictions_24h"].append(hour_data)
+        
+        return prediction_json
     except Exception as e:
         st.error(f"Error creating JSON: {e}")
         return None
 
-def download_json(data, filename="prediction_data.json"):
+def download_json(data, filename="lstm_prediction_data.json"):
     """Create download button for JSON data"""
     json_str = json.dumps(data, indent=2)
     st.download_button(
-        label="📥 Download Prediction Data as JSON",
+        label="📥 Download LSTM Prediction Data as JSON",
         data=json_str,
         file_name=filename,
         mime="application/json"
     )
 
-def test_blynk_connection():
-    """Test if Blynk API is accessible"""
-    try:
-        # Test with virtual pin V0
-        test_url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&V0=test"
-        response = requests.get(test_url, timeout=10)
-        
-        if response.status_code == 200:
-            return True, "Connection successful - V0 is available"
-        else:
-            # Try with lowercase v0
-            test_url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&v0=test"
-            response = requests.get(test_url, timeout=10)
-            if response.status_code == 200:
-                return True, "Connection successful - v0 is available"
-            else:
-                return False, f"HTTP {response.status_code}: {response.text}"
-    except requests.exceptions.RequestException as e:
-        return False, f"Connection failed: {str(e)}"
-
-def send_json_to_blynk_v0(json_data):
-    """Send JSON data to Blynk virtual pin V0"""
-    try:
-        # Convert to JSON string
-        json_str = json.dumps(json_data, indent=2)
-        
-        # URL encode the JSON data
-        encoded_json = urllib.parse.quote(json_str)
-        
-        # Try both V0 and v0
-        pin_variants = ['V0', 'v0']
-        
-        for pin in pin_variants:
-            try:
-                # Format: https://blynk.cloud/external/api/update?token=YOUR_TOKEN&V0=URL_ENCODED_JSON
-                url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&{pin}={encoded_json}"
-                
-                st.write(f"📤 Sending data to {pin}...")
-                
-                response = requests.get(url, timeout=15)
-                
-                if response.status_code == 200:
-                    st.success(f"✅ Successfully sent prediction data to {pin}!")
-                    return True
-                else:
-                    st.error(f"❌ Failed to send to {pin}: HTTP {response.status_code}")
-                    st.write(f"Response: {response.text}")
-            except Exception as e:
-                st.error(f"❌ Error sending to {pin}: {str(e)}")
-        
-        st.error("❌ Failed to send data to any virtual pin variant")
-        return False
-            
-    except Exception as e:
-        st.error(f"❌ Error sending data to Blynk: {e}")
-        return False
-
 def main():
-    st.set_page_config(page_title="Air Quality Prediction", layout="wide")
+    st.set_page_config(page_title="LSTM Air Quality Prediction", layout="wide")
     
-    st.title("🌤️ Air Quality Prediction Dashboard")
+    st.title("🧠 LSTM Air Quality Prediction Dashboard")
     st.markdown("""
-    This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using multiple machine learning models.
+    This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using **LSTM neural networks**.
     **All data is used for training** and continuous predictions are shown in hourly and weekly plots.
     """)
-    
-    # Blynk API Configuration
-    st.sidebar.header("🌐 Blynk API Configuration")
-    enable_blynk = st.sidebar.checkbox("Enable Blynk API Integration", value=True)
-    
-    if enable_blynk:
-        st.sidebar.info("Blynk API is configured with your token")
-        
-        # Test Blynk connection
-        if st.sidebar.button("Test Blynk Connection"):
-            with st.sidebar:
-                with st.spinner('Testing Blynk connection...'):
-                    success, message = test_blynk_connection()
-                    if success:
-                        st.success("Blynk connection successful!")
-                        st.write(message)
-                    else:
-                        st.error(f"Blynk connection failed: {message}")
     
     # Load data
     with st.spinner('Loading data from Supabase...'):
@@ -623,17 +414,7 @@ def main():
         st.subheader("Data Statistics")
         st.dataframe(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].describe())
     
-    # Show missing data details
-    if st.checkbox("Show missing data details"):
-        st.subheader("Missing Values by Column")
-        missing_df = pd.DataFrame({
-            'Column': ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10'],
-            'Missing Count': [df[col].isna().sum() for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']],
-            'Missing Percentage': [df[col].isna().sum() / len(df) * 100 for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']]
-        })
-        st.dataframe(missing_df)
-    
-    st.sidebar.header("Model Configuration")
+    st.sidebar.header("LSTM Configuration")
     
     # Target selection
     target_columns = ['pm25', 'pm10', 'co2', 'co', 'temperature', 'humidity']
@@ -647,16 +428,10 @@ def main():
         st.warning("Please select at least one target variable to predict.")
         return
     
-    # Model selection
-    models_to_train = st.sidebar.multiselect(
-        "Select models to train:",
-        ['Random Forest', 'XGBoost', 'SVM', 'LSTM'],
-        default=['Random Forest', 'XGBoost']
-    )
-    
-    if not models_to_train:
-        st.warning("Please select at least one model to train.")
-        return
+    # LSTM parameters
+    st.sidebar.subheader("LSTM Parameters")
+    sequence_length = st.sidebar.slider("Sequence Length", min_value=3, max_value=24, value=6, 
+                                       help="Number of previous time steps to use for prediction")
     
     # Feature engineering
     st.header("🔧 Feature Engineering")
@@ -665,188 +440,88 @@ def main():
         st.error("Not enough data for feature engineering. Need at least 2 records.")
         return
         
-    with st.spinner('Creating features...'):
+    with st.spinner('Creating features for LSTM...'):
         df_eng = create_features(df, selected_targets, n_lags=2)
     
     if len(df_eng) == 0:
-        st.error("""
-        No data available after feature engineering. This usually happens when:
-        1. There are too many missing values in your data
-        2. The data is too short for the requested lag features
-        3. There are issues with the data types
-        
-        Please check your data quality and try again.
-        """)
+        st.error("No data available after feature engineering.")
         return
     
     st.success(f"Feature engineering completed! Created {len(df_eng)} samples with {len(df_eng.columns)} features.")
     
-    # Prepare data for traditional ML models
-    feature_cols = [col for col in df_eng.columns if col not in ['id', 'created_at'] + selected_targets]
+    # Prepare LSTM data
+    st.header("🧠 LSTM Model Training")
     
-    if not feature_cols:
-        st.error("No features generated. Check your data.")
+    with st.spinner('Preparing LSTM data...'):
+        X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
+    
+    if len(X_lstm) == 0:
+        st.error("Not enough sequences for LSTM training. Please increase sequence length or add more data.")
         return
-        
-    X = df_eng[feature_cols].values
-    y = df_eng[selected_targets].values
     
-    # Split data for initial evaluation (but we'll use all data for final training)
-    test_size = 0.2
+    st.info(f"Prepared {len(X_lstm)} sequences for LSTM training")
     
-    if len(X) < 2:
-        st.error("Not enough data for training. Need at least 2 samples after feature engineering.")
-        return
-        
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, shuffle=False)
+    # Split LSTM data for training
+    split_idx = int(len(X_lstm) * 0.8)
+    X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
+    y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
     
-    # Model training section
-    st.header("🤖 Model Training & Evaluation")
-    st.info("⚠️ All available data is used for training the models")
-    
-    all_models = {}
-    all_predictions = {}
-    all_scores = {}
-    
-    # Model name to key mapping
-    model_keys = {
-        'Random Forest': 'RF',
-        'XGBoost': 'XGB', 
-        'SVM': 'SVM',
-        'LSTM': 'LSTM'
-    }
-    
-    # Train selected models using all data
-    for model_name in models_to_train:
-        st.subheader(f"{model_name} Model")
-        model_key = model_keys[model_name]
-        
+    # Train LSTM model
+    with st.spinner('Training LSTM model...'):
         try:
-            with st.spinner(f'Training {model_name} with all data...'):
-                if model_name == 'Random Forest':
-                    models, predictions, scores = train_random_forest(X_train, X_test, y_train, y_test, selected_targets)
-                    all_models[model_key] = models
-                    all_predictions[model_key] = predictions
-                    all_scores[model_key] = scores
-                    
-                elif model_name == 'XGBoost':
-                    models, predictions, scores = train_xgboost(X_train, X_test, y_train, y_test, selected_targets)
-                    all_models[model_key] = models
-                    all_predictions[model_key] = predictions
-                    all_scores[model_key] = scores
-                    
-                elif model_name == 'SVM':
-                    model, predictions, scores, scaler_X, scaler_y = train_svm(X_train, X_test, y_train, y_test, selected_targets)
-                    all_models[model_key] = (model, scaler_X, scaler_y)
-                    all_predictions[model_key] = {col: predictions[:, i] for i, col in enumerate(selected_targets)}
-                    all_scores[model_key] = scores
-                    
-                elif model_name == 'LSTM':
-                    # Prepare LSTM data
-                    sequence_length = min(5, len(df_eng) // 3)
-                    if sequence_length < 2:
-                        st.warning("Not enough data for LSTM. Skipping LSTM training.")
-                        continue
-                        
-                    X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
-                    
-                    if len(X_lstm) == 0:
-                        st.warning("Not enough sequences for LSTM training. Skipping LSTM.")
-                        continue
-                    
-                    # Split LSTM data for initial setup
-                    split_idx = int(len(X_lstm) * (1 - test_size))
-                    X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
-                    y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
-                    
-                    model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
-                        X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
-                    )
-                    all_models[model_key] = (model, scaler_X, scaler_y)
-                    all_predictions[model_key] = {col: predictions[:, i] for i, col in enumerate(selected_targets)}
-                    all_scores[model_key] = scores
-            
-            # Display scores for this model
-            if model_key in all_scores:
-                scores_df = pd.DataFrame(all_scores[model_key]).T
-                scores_df.columns = ['RMSE', 'R² Score']
-                formatted_scores = scores_df.copy()
-                for col in formatted_scores.columns:
-                    formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
-                st.dataframe(formatted_scores)
-                
-        except Exception as e:
-            st.error(f"Error training {model_name}: {str(e)}")
-            continue
-    
-    # Model comparison
-    if len(all_scores) > 1:
-        st.header("📈 Model Comparison")
-        
-        comparison_data = []
-        for model_key, scores_dict in all_scores.items():
-            for target in selected_targets:
-                if target in scores_dict:
-                    comparison_data.append({
-                        'Model': model_key,
-                        'Target': target,
-                        'RMSE': scores_dict[target]['rmse'],
-                        'R2_Score': scores_dict[target]['r2']
-                    })
-        
-        if comparison_data:
-            comparison_df = pd.DataFrame(comparison_data)
-            
-            fig_rmse = go.Figure()
-            for model in comparison_df['Model'].unique():
-                model_data = comparison_df[comparison_df['Model'] == model]
-                fig_rmse.add_trace(go.Bar(
-                    name=model,
-                    x=model_data['Target'],
-                    y=model_data['RMSE']
-                ))
-            
-            fig_rmse.update_layout(
-                title="RMSE Comparison by Model and Target",
-                xaxis_title="Target Variable",
-                yaxis_title="RMSE",
-                barmode='group'
+            model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
+                X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
             )
             
-            st.plotly_chart(fig_rmse, use_container_width=True)
+            # Display LSTM model scores
+            st.subheader("LSTM Model Performance")
+            scores_df = pd.DataFrame(scores).T
+            scores_df.columns = ['RMSE', 'R² Score']
+            formatted_scores = scores_df.copy()
+            for col in formatted_scores.columns:
+                formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
+            st.dataframe(formatted_scores)
+            
+            # Store the trained model
+            lstm_model_data = (model, scaler_X, scaler_y)
+            
+        except Exception as e:
+            st.error(f"Error training LSTM model: {str(e)}")
+            return
     
     # Future prediction with plots
-    st.header("🔮 Continuous Future Predictions")
+    st.header("🔮 LSTM Future Predictions")
     
-    if st.button("Generate Future Predictions") and all_models:
+    if st.button("Generate LSTM Future Predictions"):
         try:
-            with st.spinner('Generating future predictions...'):
+            with st.spinner('Generating future predictions with LSTM...'):
                 # Generate predictions for the next 168 hours (1 week)
-                future_predictions = generate_future_predictions(
-                    all_models, df_eng, feature_cols, selected_targets, hours=168
+                future_predictions = generate_lstm_future_predictions(
+                    lstm_model_data, df_eng, selected_targets, hours=168
                 )
                 
                 # Create prediction plots
-                plots = create_prediction_plots(df, future_predictions, selected_targets, list(all_models.keys()))
+                plots = create_prediction_plots(df, future_predictions, selected_targets)
                 
                 # Display plots
                 for target, fig in plots.items():
                     st.plotly_chart(fig, use_container_width=True)
                 
                 # Show prediction table for the next 24 hours
-                st.subheader("📋 Prediction Values for Next 24 Hours")
+                st.subheader("📋 LSTM Prediction Values for Next 24 Hours")
                 prediction_data = []
                 
                 for hour in range(24):
                     hour_data = {'Hour': f"Hour {hour+1}"}
-                    for model_key in all_models.keys():
-                        if model_key in future_predictions:
-                            for target in selected_targets:
-                                value = future_predictions[model_key][target][hour]
-                                if np.isnan(value):
-                                    hour_data[f"{model_key}_{target}"] = "N/A"
-                                else:
-                                    hour_data[f"{model_key}_{target}"] = f"{value:.4f}"
+                    for target in selected_targets:
+                        if target in future_predictions and len(future_predictions[target]) > hour:
+                            value = future_predictions[target][hour]
+                            if np.isnan(value):
+                                hour_data[target] = "N/A"
+                            else:
+                                hour_data[target] = f"{value:.4f}"
+                        else:
+                            hour_data[target] = "N/A"
                     prediction_data.append(hour_data)
                 
                 if prediction_data:
@@ -854,40 +529,21 @@ def main():
                     st.dataframe(pred_df)
                     
                     # Create JSON data
-                    st.subheader("📄 JSON Data Format")
-                    prediction_json = create_prediction_json(future_predictions, selected_targets, list(all_models.keys()))
+                    st.subheader("📄 LSTM JSON Data Format")
+                    prediction_json = create_lstm_prediction_json(future_predictions, selected_targets)
                     
                     if prediction_json:
                         # Display JSON data
                         st.json(prediction_json)
                         
                         # Download JSON button
-                        download_json(prediction_json, "air_quality_predictions.json")
+                        download_json(prediction_json, "lstm_air_quality_predictions.json")
                         
-                        # Send to Blynk if enabled
-                        if enable_blynk:
-                            st.subheader("🌐 Sending to Blynk API")
-                            if st.button("Send JSON Data to Blynk V0"):
-                                with st.spinner('Sending JSON data to Blynk V0...'):
-                                    success = send_json_to_blynk_v0(prediction_json)
-                                    
-                                    if success:
-                                        st.success("✅ JSON data successfully sent to Blynk V0!")
-                                        
-                                        # Show how to retrieve the data
-                                        st.info("""
-                                        **To retrieve this data from your website:**
-                                        ```javascript
-                                        fetch('https://blynk.cloud/external/api/get?token=pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7&V0')
-                                          .then(response => response.json())
-                                          .then(data => {
-                                            console.log('24-hour predictions:', data);
-                                          });
-                                        ```
-                                        """)
+                        st.success("✅ LSTM predictions generated successfully!")
+                        st.info("You can download the JSON data using the button above.")
                     
         except Exception as e:
-            st.error(f"Error generating predictions: {str(e)}")
+            st.error(f"Error generating LSTM predictions: {str(e)}")
 
 if __name__ == "__main__":
     main()
