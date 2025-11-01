@@ -4,6 +4,7 @@ import numpy as np
 from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.express as px
 import warnings
 import requests
 import json
@@ -66,6 +67,42 @@ def load_data():
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return pd.DataFrame()
+
+def plot_correlation_heatmap(df):
+    """Create a correlation heatmap for air quality parameters"""
+    # Select only numeric columns for correlation
+    numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+    
+    # Check if all required columns exist
+    available_cols = [col for col in numeric_cols if col in df.columns]
+    
+    if len(available_cols) < 2:
+        st.warning("Not enough numeric columns for correlation analysis.")
+        return None
+    
+    # Calculate correlation matrix
+    corr_matrix = df[available_cols].corr()
+    
+    # Create heatmap
+    fig = px.imshow(
+        corr_matrix,
+        text_auto=True,
+        aspect="auto",
+        color_continuous_scale='RdBu_r',
+        title="Correlation Heatmap of Air Quality Parameters"
+    )
+    
+    # Update layout
+    fig.update_layout(
+        width=800,
+        height=600,
+        title_x=0.5
+    )
+    
+    # Update colorbar
+    fig.update_coloraxes(colorbar_title="Correlation")
+    
+    return fig
 
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
@@ -413,6 +450,48 @@ def main():
     if st.checkbox("Show data statistics"):
         st.subheader("Data Statistics")
         st.dataframe(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].describe())
+    
+    # Correlation Heatmap
+    st.header("📈 Correlation Analysis")
+    
+    st.subheader("Correlation Heatmap")
+    st.markdown("""
+    This heatmap shows the correlation between different air quality parameters. 
+    **Positive values** (blue) indicate that when one parameter increases, the other tends to increase.
+    **Negative values** (red) indicate that when one parameter increases, the other tends to decrease.
+    """)
+    
+    # Create and display correlation heatmap
+    corr_fig = plot_correlation_heatmap(df)
+    if corr_fig:
+        st.plotly_chart(corr_fig, use_container_width=True)
+        
+        # Display correlation insights
+        st.subheader("🔍 Correlation Insights")
+        
+        # Calculate correlation matrix for insights
+        numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+        available_cols = [col for col in numeric_cols if col in df.columns]
+        corr_matrix = df[available_cols].corr()
+        
+        # Find strongest correlations
+        insights = []
+        for i in range(len(corr_matrix.columns)):
+            for j in range(i+1, len(corr_matrix.columns)):
+                corr_value = corr_matrix.iloc[i, j]
+                if abs(corr_value) > 0.5:  # Strong correlation threshold
+                    col1 = corr_matrix.columns[i]
+                    col2 = corr_matrix.columns[j]
+                    insights.append((col1, col2, corr_value))
+        
+        if insights:
+            st.write("**Strong Correlations Found:**")
+            for col1, col2, corr_value in insights:
+                direction = "positive" if corr_value > 0 else "negative"
+                strength = "strong" if abs(corr_value) > 0.7 else "moderate"
+                st.write(f"- **{col1}** and **{col2}**: {strength} {direction} correlation ({corr_value:.3f})")
+        else:
+            st.info("No strong correlations (|r| > 0.5) found between parameters.")
     
     st.sidebar.header("LSTM Configuration")
     
