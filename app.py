@@ -5,7 +5,8 @@ from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
-import requests  # Added for API calls
+import requests
+import json
 
 warnings.filterwarnings('ignore')
 
@@ -28,8 +29,8 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 # Blynk API configuration
 BLYNK_API_TOKEN = "pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7"
-BLYNK_UPDATE_URL = f"https://blynk.cloud/external/api/update?token={BLYNK_API_TOKEN}"
-BLYNK_GET_URL = f"https://blynk.cloud/external/api/get?token={BLYNK_API_TOKEN}"
+BLYNK_UPDATE_BASE_URL = "https://blynk.cloud/external/api/update"
+BLYNK_GET_BASE_URL = "https://blynk.cloud/external/api/get"
 
 @st.cache_resource
 def init_supabase():
@@ -449,43 +450,44 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
     return plots
 
 def send_to_blynk(predictions_data, selected_targets, models_to_send):
-    """Send prediction data to Blynk API"""
+    """Send prediction data to Blynk API as JSON in v0 parameter"""
     try:
-        # Create a structured data format for Blynk
-        blynk_data = {}
-        
-        # For each hour, create a combined prediction value
-        # We'll use the first model's predictions as primary values
+        # Create a JSON object with the first hour's predictions
         if models_to_send and len(models_to_send) > 0:
             primary_model = models_to_send[0]
             
-            for hour_idx in range(24):  # Next 24 hours
-                hour_data = {}
-                for target in selected_targets:
-                    if (primary_model in predictions_data and 
-                        target in predictions_data[primary_model] and 
-                        len(predictions_data[primary_model][target]) > hour_idx):
-                        value = predictions_data[primary_model][target][hour_idx]
-                        if not np.isnan(value):
-                            hour_data[target] = float(value)
-                
-                # Store hour data in Blynk format
-                if hour_data:
-                    # You can customize how you want to structure the data
-                    # For now, we'll create separate virtual pins for each target
-                    for target, value in hour_data.items():
-                        pin_name = f"V{hour_idx}_{target}"  # Virtual pin naming
-                        blynk_data[pin_name] = value
-        
-        # Send data to Blynk
-        if blynk_data:
-            response = requests.get(BLYNK_UPDATE_URL, params=blynk_data)
+            # Get the first hour prediction for all selected targets
+            blynk_data = {}
+            for target in selected_targets:
+                if (primary_model in predictions_data and 
+                    target in predictions_data[primary_model] and 
+                    len(predictions_data[primary_model][target]) > 0):
+                    value = predictions_data[primary_model][target][0]
+                    if not np.isnan(value):
+                        blynk_data[target] = float(value)
+            
+            # Add default values for rain and light if they don't exist
+            if 'rain' not in blynk_data:
+                blynk_data['rain'] = 1  # Default value
+            if 'light' not in blynk_data:
+                blynk_data['light'] = 10  # Default value
+            
+            # Convert to JSON string
+            json_data = json.dumps(blynk_data)
+            
+            # Create the full URL with JSON in v0 parameter
+            url = f"{BLYNK_UPDATE_BASE_URL}?token={BLYNK_API_TOKEN}&v0={json_data}"
+            
+            # Send the request
+            response = requests.get(url)
+            
             if response.status_code == 200:
                 st.success("✅ Prediction data successfully sent to Blynk!")
-                st.info(f"Sent {len(blynk_data)} data points to Blynk API")
+                st.info(f"Sent data: {json_data}")
                 return True
             else:
                 st.error(f"❌ Failed to send data to Blynk. Status code: {response.status_code}")
+                st.error(f"Response: {response.text}")
                 return False
         else:
             st.warning("No valid prediction data to send to Blynk")
@@ -498,8 +500,9 @@ def send_to_blynk(predictions_data, selected_targets, models_to_send):
 def get_blynk_data():
     """Get data from Blynk API"""
     try:
-        # Example: Get data from virtual pin V0
-        response = requests.get(f"{BLYNK_GET_URL}&v0")
+        # Get data from virtual pin v0
+        url = f"{BLYNK_GET_BASE_URL}?token={BLYNK_API_TOKEN}&v0"
+        response = requests.get(url)
         if response.status_code == 200:
             return response.text
         else:
@@ -601,6 +604,7 @@ def main():
             test_data = get_blynk_data()
             if test_data is not None:
                 st.sidebar.success("Blynk connection successful!")
+                st.sidebar.write(f"Current data: {test_data}")
             else:
                 st.sidebar.error("Blynk connection failed!")
     
@@ -831,7 +835,6 @@ def main():
                                 ```
                                 https://blynk.cloud/external/api/get?token=pbHd8QA0u4enaLQZHhQwqoHN0rKMXsK7&v0
                                 ```
-                                Replace `v0` with the appropriate virtual pin for your data.
                                 """)
                     
         except Exception as e:
