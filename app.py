@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
 import json
+from datetime import datetime, timedelta
 
 warnings.filterwarnings('ignore')
 
@@ -16,7 +17,6 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from datetime import datetime, timedelta
 
 # Supabase configuration
 SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
@@ -172,7 +172,7 @@ def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     
     return model, predictions, scores, history, scaler_X, scaler_y
 
-def generate_lstm_future_predictions(model, scaler_X, scaler_y, df_eng, selected_targets, hours=168):
+def generate_lstm_future_predictions(model, df_eng, selected_targets, scaler_X, scaler_y, hours=168):
     """Generate future predictions using LSTM model"""
     future_preds = {target: [] for target in selected_targets}
     
@@ -317,9 +317,8 @@ def create_prediction_json(future_predictions, selected_targets):
     try:
         # Create comprehensive data structure with all 24 hours
         prediction_json = {
-            "model": "LSTM",
             "timestamp": datetime.now().isoformat(),
-            "prediction_generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model_used": "LSTM",
             "predictions_24h": []
         }
         
@@ -367,7 +366,7 @@ def main():
     st.title("🧠 LSTM Air Quality Prediction Dashboard")
     st.markdown("""
     This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using LSTM model.
-    **All data is used for training** and predictions are shown in hourly and weekly plots with JSON download.
+    **All data is used for training** and predictions are shown in hourly and weekly plots.
     """)
     
     # Load data
@@ -407,6 +406,16 @@ def main():
         st.subheader("Data Statistics")
         st.dataframe(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].describe())
     
+    # Show missing data details
+    if st.checkbox("Show missing data details"):
+        st.subheader("Missing Values by Column")
+        missing_df = pd.DataFrame({
+            'Column': ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10'],
+            'Missing Count': [df[col].isna().sum() for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']],
+            'Missing Percentage': [df[col].isna().sum() / len(df) * 100 for col in ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']]
+        })
+        st.dataframe(missing_df)
+    
     st.sidebar.header("Configuration")
     
     # Target selection
@@ -428,7 +437,7 @@ def main():
         st.error("Not enough data for feature engineering. Need at least 2 records.")
         return
         
-    with st.spinner('Creating features for LSTM...'):
+    with st.spinner('Creating features...'):
         df_eng = create_features(df, selected_targets, n_lags=2)
     
     if len(df_eng) == 0:
@@ -444,56 +453,74 @@ def main():
     
     st.success(f"Feature engineering completed! Created {len(df_eng)} samples with {len(df_eng.columns)} features.")
     
-    # Prepare data for LSTM
-    st.header("🧠 LSTM Model Training")
+    # Prepare data for LSTM model
+    feature_cols = [col for col in df_eng.columns if col not in ['id', 'created_at'] + selected_targets]
     
-    # Prepare LSTM data
-    sequence_length = min(5, len(df_eng) // 3)
-    if sequence_length < 2:
-        st.error("Not enough data for LSTM training. Need at least 2 sequences.")
+    if not feature_cols:
+        st.error("No features generated. Check your data.")
         return
         
-    with st.spinner('Preparing LSTM data...'):
-        X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
+    X = df_eng[feature_cols].values
+    y = df_eng[selected_targets].values
     
-    if len(X_lstm) == 0:
-        st.error("Not enough sequences for LSTM training. Please check your data.")
+    # Split data for initial evaluation (but we'll use all data for final training)
+    test_size = 0.2
+    
+    if len(X) < 2:
+        st.error("Not enough data for training. Need at least 2 samples after feature engineering.")
         return
+        
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, shuffle=False)
     
-    # Split LSTM data
-    split_idx = int(len(X_lstm) * 0.8)
-    X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
-    y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
+    # LSTM training section
+    st.header("🤖 LSTM Model Training & Evaluation")
+    st.info("⚠️ All available data is used for training the LSTM model")
     
-    # Train LSTM model
-    with st.spinner('Training LSTM model...'):
-        try:
+    try:
+        with st.spinner('Training LSTM model with all data...'):
+            # Prepare LSTM data
+            sequence_length = min(5, len(df_eng) // 3)
+            if sequence_length < 2:
+                st.error("Not enough data for LSTM. Need at least 2 sequences.")
+                return
+                
+            X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
+            
+            if len(X_lstm) == 0:
+                st.error("Not enough sequences for LSTM training.")
+                return
+            
+            # Split LSTM data for initial setup
+            split_idx = int(len(X_lstm) * (1 - test_size))
+            X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
+            y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
+            
             model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
                 X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
             )
-            
-            # Display LSTM model scores
-            st.subheader("LSTM Model Performance")
-            scores_df = pd.DataFrame(scores).T
-            scores_df.columns = ['RMSE', 'R² Score']
-            formatted_scores = scores_df.copy()
-            for col in formatted_scores.columns:
-                formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
-            st.dataframe(formatted_scores)
-            
-        except Exception as e:
-            st.error(f"Error training LSTM model: {str(e)}")
-            return
+        
+        # Display scores for LSTM model
+        st.subheader("LSTM Model Performance")
+        scores_df = pd.DataFrame(scores).T
+        scores_df.columns = ['RMSE', 'R² Score']
+        formatted_scores = scores_df.copy()
+        for col in formatted_scores.columns:
+            formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
+        st.dataframe(formatted_scores)
+        
+    except Exception as e:
+        st.error(f"Error training LSTM: {str(e)}")
+        return
     
     # Future prediction with plots
     st.header("🔮 LSTM Future Predictions")
     
-    if st.button("Generate LSTM Predictions"):
+    if st.button("Generate LSTM Future Predictions"):
         try:
-            with st.spinner('Generating LSTM future predictions...'):
+            with st.spinner('Generating future predictions with LSTM...'):
                 # Generate predictions for the next 168 hours (1 week)
                 future_predictions = generate_lstm_future_predictions(
-                    model, scaler_X, scaler_y, df_eng, selected_targets, hours=168
+                    model, df_eng, selected_targets, scaler_X, scaler_y, hours=168
                 )
                 
                 # Create prediction plots
@@ -535,7 +562,7 @@ def main():
                         st.success("✅ LSTM predictions generated successfully! You can download the JSON data above.")
                     
         except Exception as e:
-            st.error(f"Error generating predictions: {str(e)}")
+            st.error(f"Error generating LSTM predictions: {str(e)}")
 
 if __name__ == "__main__":
     main()
