@@ -7,4 +7,3 @@ tensorflow
 plotly
 matplotlib
 seaborn
-requests
