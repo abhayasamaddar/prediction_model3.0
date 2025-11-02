@@ -120,7 +120,7 @@ def prepare_lstm_data(df, target_columns, sequence_length=10):
     
     return np.array(X), np.array(y)
 
-def train_lstm(X_train, X_test, y_train, y_test, target_columns):
+def train_lstm(X_train, X_test, y_train, y_test, target_columns, epochs=30):
     """Train LSTM model using all data"""
     # Use all data for training
     X_all = np.vstack([X_train, X_test])
@@ -151,7 +151,7 @@ def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     # Train model
     history = model.fit(
         X_all_scaled, y_all_scaled,
-        epochs=30,
+        epochs=epochs,
         batch_size=16,
         validation_split=0.2,
         verbose=0
@@ -328,7 +328,7 @@ def main():
     st.title("🌤️ Air Quality Prediction Dashboard")
     st.markdown("""
     This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using LSTM model.
-    **All data is used for training** and continuous predictions are shown in hourly and weekly plots.
+    **Select the number of samples to use for training** and continuous predictions are shown in hourly and weekly plots.
     """)
     
     # Load data
@@ -392,6 +392,40 @@ def main():
         st.warning("Please select at least one target variable to predict.")
         return
     
+    # Training configuration
+    st.sidebar.subheader("Training Configuration")
+    
+    # Number of samples selection
+    max_samples = len(df)
+    training_samples = st.sidebar.slider(
+        "Number of samples to use for training:",
+        min_value=100,
+        max_value=max_samples,
+        value=min(2000, max_samples),
+        step=100,
+        help="Select how many recent samples to use for training the model"
+    )
+    
+    # Sequence length selection
+    sequence_length = st.sidebar.slider(
+        "LSTM Sequence Length:",
+        min_value=2,
+        max_value=20,
+        value=5,
+        step=1,
+        help="Number of time steps to use for LSTM sequences"
+    )
+    
+    # Epochs selection
+    epochs = st.sidebar.slider(
+        "Training Epochs:",
+        min_value=10,
+        max_value=100,
+        value=30,
+        step=10,
+        help="Number of training epochs for LSTM"
+    )
+    
     # Model selection - only LSTM available
     models_to_train = ['LSTM']
     
@@ -401,9 +435,13 @@ def main():
     if len(df) < 2:
         st.error("Not enough data for feature engineering. Need at least 2 records.")
         return
-        
+    
+    # Use only the selected number of samples
+    df_subset = df.tail(training_samples).copy()
+    st.info(f"Using {len(df_subset)} most recent samples for training")
+    
     with st.spinner('Creating features...'):
-        df_eng = create_features(df, selected_targets, n_lags=2)
+        df_eng = create_features(df_subset, selected_targets, n_lags=2)
     
     if len(df_eng) == 0:
         st.error("""
@@ -417,12 +455,12 @@ def main():
         
         # Show diagnostic information
         st.subheader("Diagnostic Information")
-        st.write(f"Original data shape: {df.shape}")
-        st.write(f"Columns in original data: {list(df.columns)}")
-        st.write(f"Data types: {df.dtypes}")
+        st.write(f"Original data shape: {df_subset.shape}")
+        st.write(f"Columns in original data: {list(df_subset.columns)}")
+        st.write(f"Data types: {df_subset.dtypes}")
         
         # Check for any rows with all NaN values
-        all_nan_rows = df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].isna().all(axis=1).sum()
+        all_nan_rows = df_subset[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].isna().all(axis=1).sum()
         st.write(f"Rows with all NaN values: {all_nan_rows}")
         
         return
@@ -448,7 +486,7 @@ def main():
     
     # Model training section
     st.header("🤖 Model Training & Evaluation")
-    st.info("⚠️ All available data is used for training the LSTM model")
+    st.info(f"⚠️ Using {len(df_eng)} samples for training the LSTM model")
     
     all_models = {}
     all_predictions = {}
@@ -465,14 +503,14 @@ def main():
         model_key = model_keys[model_name]
         
         try:
-            with st.spinner(f'Training {model_name} with all data...'):
+            with st.spinner(f'Training {model_name} with {len(df_eng)} samples...'):
                 # Prepare LSTM data
-                sequence_length = min(5, len(df_eng) // 3)
-                if sequence_length < 2:
+                safe_sequence_length = min(sequence_length, len(df_eng) // 3)
+                if safe_sequence_length < 2:
                     st.warning("Not enough data for LSTM. Skipping LSTM training.")
                     continue
                     
-                X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
+                X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, safe_sequence_length)
                 
                 if len(X_lstm) == 0:
                     st.warning("Not enough sequences for LSTM training. Skipping LSTM.")
@@ -484,7 +522,7 @@ def main():
                 y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
                 
                 model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
-                    X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets
+                    X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets, epochs
                 )
                 all_models[model_key] = (model, scaler_X, scaler_y)
                 all_predictions[model_key] = {col: predictions[:, i] for i, col in enumerate(selected_targets)}
@@ -498,7 +536,17 @@ def main():
                 formatted_scores = scores_df.copy()
                 for col in formatted_scores.columns:
                     formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
+                
                 st.dataframe(formatted_scores)
+                
+                # Show training information
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Training Samples", len(df_eng))
+                with col2:
+                    st.metric("Sequence Length", safe_sequence_length)
+                with col3:
+                    st.metric("Training Epochs", epochs)
                 
         except Exception as e:
             st.error(f"Error training {model_name}: {str(e)}")
