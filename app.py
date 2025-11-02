@@ -5,6 +5,9 @@ from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
+import json
+from datetime import datetime, timedelta
+
 warnings.filterwarnings('ignore')
 
 # Machine Learning imports
@@ -14,7 +17,6 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from datetime import datetime, timedelta
 
 # Supabase configuration
 SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
@@ -121,7 +123,7 @@ def prepare_lstm_data(df, target_columns, sequence_length=10):
     return np.array(X), np.array(y)
 
 def train_lstm(X_train, X_test, y_train, y_test, target_columns, epochs=30):
-    """Train LSTM model using all data"""
+    """Train LSTM model using specified data"""
     # Use all data for training
     X_all = np.vstack([X_train, X_test])
     y_all = np.vstack([y_train, y_test])
@@ -170,53 +172,46 @@ def train_lstm(X_train, X_test, y_train, y_test, target_columns, epochs=30):
     
     return model, predictions, scores, history, scaler_X, scaler_y
 
-def generate_future_predictions(models, df_eng, feature_cols, selected_targets, hours=168):
-    """Generate future predictions for the next hours"""
-    future_predictions = {}
+def generate_lstm_future_predictions(model, df_eng, selected_targets, scaler_X, scaler_y, hours=168):
+    """Generate future predictions using LSTM model"""
+    future_preds = {target: [] for target in selected_targets}
     
-    for model_key, model_data in models.items():
-        future_preds = {target: [] for target in selected_targets}
+    try:
+        sequence_length = model.input_shape[1]
         
-        try:
-            if model_key == 'LSTM':
-                model, scaler_X, scaler_y = model_data
-                sequence_length = model.input_shape[1]
-                
-                # Get the last sequence
-                last_sequence = df_eng[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].tail(sequence_length).values
-                
-                for hour in range(hours):
-                    sequence_scaled = scaler_X.transform(last_sequence.reshape(-1, 6)).reshape(1, sequence_length, 6)
-                    pred_scaled = model.predict(sequence_scaled, verbose=0)
-                    pred = scaler_y.inverse_transform(pred_scaled)[0]
-                    
-                    for i, target in enumerate(selected_targets):
-                        future_preds[target].append(pred[i])
-                    
-                    # Update the sequence for next prediction
-                    new_row = pred.copy()
-                    last_sequence = np.vstack([last_sequence[1:], new_row])
-                
-        except Exception as e:
-            st.warning(f"Error in prediction for {model_key}: {e}")
-            # Fill with simple trend if prediction fails
-            for target in selected_targets:
-                if len(future_preds[target]) < hours:
-                    last_value = df_eng[target].iloc[-1]
-                    # Simple linear trend
-                    for i in range(len(future_preds[target]), hours):
-                        future_preds[target].append(last_value * (1 + 0.01 * i))
+        # Get the last sequence
+        last_sequence = df_eng[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].tail(sequence_length).values
         
-        future_predictions[model_key] = future_preds
+        for hour in range(hours):
+            sequence_scaled = scaler_X.transform(last_sequence.reshape(-1, 6)).reshape(1, sequence_length, 6)
+            pred_scaled = model.predict(sequence_scaled, verbose=0)
+            pred = scaler_y.inverse_transform(pred_scaled)[0]
+            
+            for i, target in enumerate(selected_targets):
+                future_preds[target].append(pred[i])
+            
+            # Update the sequence for next prediction
+            new_row = pred.copy()
+            last_sequence = np.vstack([last_sequence[1:], new_row])
+        
+    except Exception as e:
+        st.warning(f"Error in LSTM prediction: {e}")
+        # Fill with simple trend if prediction fails
+        for target in selected_targets:
+            if len(future_preds[target]) < hours:
+                last_value = df_eng[target].iloc[-1]
+                # Simple linear trend
+                for i in range(len(future_preds[target]), hours):
+                    future_preds[target].append(last_value * (1 + 0.01 * i))
     
-    return future_predictions
+    return future_preds
 
-def create_prediction_plots(df, future_predictions, selected_targets, models_to_plot):
+def create_prediction_plots(df, future_predictions, selected_targets):
     """Create hourly and weekly prediction plots"""
     
     # Generate future timestamps
     last_timestamp = df['created_at'].iloc[-1]
-    future_hours = len(list(future_predictions.values())[0][selected_targets[0]])
+    future_hours = len(future_predictions[selected_targets[0]])
     future_timestamps = [last_timestamp + timedelta(hours=i) for i in range(1, future_hours + 1)]
     
     plots = {}
@@ -245,29 +240,26 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
                 row=1, col=1
             )
         
-        # Future predictions for each model (first 24 hours)
-        colors = ['red', 'green', 'orange', 'purple']
-        for i, model_key in enumerate(models_to_plot):
-            if model_key in future_predictions and target in future_predictions[model_key]:
-                pred_values = future_predictions[model_key][target][:24]
-                pred_timestamps = future_timestamps[:24]
-                
-                # Filter out NaN values
-                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-                if valid_indices:
-                    valid_pred = [pred_values[j] for j in valid_indices]
-                    valid_times = [pred_timestamps[j] for j in valid_indices]
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=valid_times,
-                            y=valid_pred,
-                            mode='lines+markers',
-                            name=f'Predicted {model_key}',
-                            line=dict(color=colors[i % len(colors)], width=2, dash='dash')
-                        ),
-                        row=1, col=1
-                    )
+        # Future predictions (first 24 hours)
+        pred_values = future_predictions[target][:24]
+        pred_timestamps = future_timestamps[:24]
+        
+        # Filter out NaN values
+        valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+        if valid_indices:
+            valid_pred = [pred_values[j] for j in valid_indices]
+            valid_times = [pred_timestamps[j] for j in valid_indices]
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=valid_times,
+                    y=valid_pred,
+                    mode='lines+markers',
+                    name='Predicted LSTM',
+                    line=dict(color='red', width=2, dash='dash')
+                ),
+                row=1, col=1
+            )
         
         # Plot 2: Weekly overview (all 168 hours)
         # Recent actual data
@@ -285,31 +277,29 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
                 row=2, col=1
             )
         
-        # Future predictions for each model (all 168 hours)
-        for i, model_key in enumerate(models_to_plot):
-            if model_key in future_predictions and target in future_predictions[model_key]:
-                pred_values = future_predictions[model_key][target]
-                
-                # Filter out NaN values
-                valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
-                if valid_indices:
-                    valid_pred = [pred_values[j] for j in valid_indices]
-                    valid_times = [future_timestamps[j] for j in valid_indices]
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=valid_times,
-                            y=valid_pred,
-                            mode='lines',
-                            name=f'Predicted {model_key}',
-                            line=dict(color=colors[i % len(colors)], width=2, dash='dash')
-                        ),
-                        row=2, col=1
-                    )
+        # Future predictions (all 168 hours)
+        pred_values = future_predictions[target]
+        
+        # Filter out NaN values
+        valid_indices = [j for j, val in enumerate(pred_values) if not np.isnan(val)]
+        if valid_indices:
+            valid_pred = [pred_values[j] for j in valid_indices]
+            valid_times = [future_timestamps[j] for j in valid_indices]
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=valid_times,
+                    y=valid_pred,
+                    mode='lines',
+                    name='Predicted LSTM',
+                    line=dict(color='red', width=2, dash='dash')
+                ),
+                row=2, col=1
+            )
         
         fig.update_layout(
             height=800,
-            title_text=f"Prediction Analysis for {target}",
+            title_text=f"LSTM Prediction Analysis for {target}",
             showlegend=True
         )
         
@@ -322,13 +312,61 @@ def create_prediction_plots(df, future_predictions, selected_targets, models_to_
     
     return plots
 
+def create_prediction_json(future_predictions, selected_targets):
+    """Create JSON format of LSTM prediction data"""
+    try:
+        # Create comprehensive data structure with all 24 hours
+        prediction_json = {
+            "timestamp": datetime.now().isoformat(),
+            "model_used": "LSTM",
+            "predictions_24h": []
+        }
+        
+        # Add predictions for all 24 hours
+        for hour in range(24):
+            hour_data = {
+                "hour": hour + 1,
+                "predictions": {}
+            }
+            
+            # Get predictions for all targets for this hour
+            for target in selected_targets:
+                if (target in future_predictions and 
+                    len(future_predictions[target]) > hour):
+                    value = future_predictions[target][hour]
+                    if not np.isnan(value):
+                        hour_data["predictions"][target] = float(value)
+            
+            # Add default values if missing
+            if 'rain' not in hour_data["predictions"]:
+                hour_data["predictions"]['rain'] = 0
+            if 'light' not in hour_data["predictions"]:
+                hour_data["predictions"]['light'] = 0
+            
+            prediction_json["predictions_24h"].append(hour_data)
+        
+        return prediction_json
+    except Exception as e:
+        st.error(f"Error creating JSON: {e}")
+        return None
+
+def download_json(data, filename="lstm_predictions.json"):
+    """Create download button for JSON data"""
+    json_str = json.dumps(data, indent=2)
+    st.download_button(
+        label="📥 Download LSTM Prediction Data as JSON",
+        data=json_str,
+        file_name=filename,
+        mime="application/json"
+    )
+
 def main():
-    st.set_page_config(page_title="Air Quality Prediction", layout="wide")
+    st.set_page_config(page_title="LSTM Air Quality Prediction", layout="wide")
     
-    st.title("🌤️ Air Quality Prediction Dashboard")
+    st.title("🧠 LSTM Air Quality Prediction Dashboard")
     st.markdown("""
     This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using LSTM model.
-    **Select the number of samples to use for training** and continuous predictions are shown in hourly and weekly plots.
+    **You can manually select the number of samples to use for training.**
     """)
     
     # Load data
@@ -393,55 +431,65 @@ def main():
         return
     
     # Training configuration
-    st.sidebar.subheader("Training Configuration")
+    st.sidebar.header("Training Configuration")
     
-    # Number of samples selection
-    max_samples = len(df)
-    training_samples = st.sidebar.slider(
-        "Number of samples to use for training:",
-        min_value=100,
-        max_value=max_samples,
-        value=min(2000, max_samples),
-        step=100,
-        help="Select how many recent samples to use for training the model"
-    )
+    # Option to use all data or select samples
+    use_all_data = st.sidebar.checkbox("Use all available data for training", value=True)
     
-    # Sequence length selection
-    sequence_length = st.sidebar.slider(
-        "LSTM Sequence Length:",
-        min_value=2,
-        max_value=20,
-        value=5,
-        step=1,
-        help="Number of time steps to use for LSTM sequences"
-    )
+    if not use_all_data:
+        # Allow manual selection of training samples
+        max_samples = len(df)
+        training_samples = st.sidebar.slider(
+            "Select number of samples for training:",
+            min_value=50,
+            max_value=max_samples,
+            value=min(1000, max_samples),
+            step=50,
+            help="Select how many recent samples to use for training the LSTM model"
+        )
+        
+        # Display sample information
+        st.sidebar.info(f"Using {training_samples} most recent samples for training")
+    else:
+        training_samples = len(df)
+        st.sidebar.info(f"Using all {training_samples} samples for training")
     
-    # Epochs selection
+    # Epoch selection
     epochs = st.sidebar.slider(
-        "Training Epochs:",
+        "Number of training epochs:",
         min_value=10,
         max_value=100,
         value=30,
-        step=10,
-        help="Number of training epochs for LSTM"
+        step=5,
+        help="More epochs may improve accuracy but take longer to train"
     )
     
-    # Model selection - only LSTM available
-    models_to_train = ['LSTM']
+    # Filter data based on sample selection
+    if use_all_data:
+        df_filtered = df.copy()
+    else:
+        df_filtered = df.tail(training_samples).copy()
     
-    # Feature engineering
-    st.header("🔧 Feature Engineering")
+    # Display training data information
+    st.header("🔧 Feature Engineering & Training Setup")
     
-    if len(df) < 2:
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Training Samples", len(df_filtered))
+    
+    with col2:
+        st.metric("Features Available", len(df_filtered.columns))
+    
+    with col3:
+        st.metric("Training Epochs", epochs)
+    
+    if len(df_filtered) < 2:
         st.error("Not enough data for feature engineering. Need at least 2 records.")
         return
-    
-    # Use only the selected number of samples
-    df_subset = df.tail(training_samples).copy()
-    st.info(f"Using {len(df_subset)} most recent samples for training")
-    
+        
     with st.spinner('Creating features...'):
-        df_eng = create_features(df_subset, selected_targets, n_lags=2)
+        df_eng = create_features(df_filtered, selected_targets, n_lags=2)
     
     if len(df_eng) == 0:
         st.error("""
@@ -452,20 +500,11 @@ def main():
         
         Please check your data quality and try again.
         """)
-        
-        # Show diagnostic information
-        st.subheader("Diagnostic Information")
-        st.write(f"Original data shape: {df_subset.shape}")
-        st.write(f"Columns in original data: {list(df_subset.columns)}")
-        st.write(f"Data types: {df_subset.dtypes}")
-        
-        # Check for any rows with all NaN values
-        all_nan_rows = df_subset[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].isna().all(axis=1).sum()
-        st.write(f"Rows with all NaN values: {all_nan_rows}")
-        
         return
     
-    # Prepare data for traditional ML models
+    st.success(f"Feature engineering completed! Created {len(df_eng)} samples with {len(df_eng.columns)} features.")
+    
+    # Prepare data for LSTM model
     feature_cols = [col for col in df_eng.columns if col not in ['id', 'created_at'] + selected_targets]
     
     if not feature_cols:
@@ -484,119 +523,122 @@ def main():
         
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, shuffle=False)
     
-    # Model training section
-    st.header("🤖 Model Training & Evaluation")
-    st.info(f"⚠️ Using {len(df_eng)} samples for training the LSTM model")
+    # LSTM training section
+    st.header("🤖 LSTM Model Training & Evaluation")
     
-    all_models = {}
-    all_predictions = {}
-    all_scores = {}
+    if use_all_data:
+        st.info("⚠️ All available data is used for training the LSTM model")
+    else:
+        st.info(f"⚠️ Using {len(df_filtered)} most recent samples for training the LSTM model")
     
-    # Model name to key mapping
-    model_keys = {
-        'LSTM': 'LSTM'
-    }
-    
-    # Train LSTM model
-    for model_name in models_to_train:
-        st.subheader(f"{model_name} Model")
-        model_key = model_keys[model_name]
-        
-        try:
-            with st.spinner(f'Training {model_name} with {len(df_eng)} samples...'):
-                # Prepare LSTM data
-                safe_sequence_length = min(sequence_length, len(df_eng) // 3)
-                if safe_sequence_length < 2:
-                    st.warning("Not enough data for LSTM. Skipping LSTM training.")
-                    continue
-                    
-                X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, safe_sequence_length)
+    try:
+        with st.spinner('Training LSTM model...'):
+            # Prepare LSTM data
+            sequence_length = min(5, len(df_eng) // 3)
+            if sequence_length < 2:
+                st.error("Not enough data for LSTM. Need at least 2 sequences.")
+                return
                 
-                if len(X_lstm) == 0:
-                    st.warning("Not enough sequences for LSTM training. Skipping LSTM.")
-                    continue
-                
-                # Split LSTM data for initial setup
-                split_idx = int(len(X_lstm) * (1 - test_size))
-                X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
-                y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
-                
-                model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
-                    X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets, epochs
-                )
-                all_models[model_key] = (model, scaler_X, scaler_y)
-                all_predictions[model_key] = {col: predictions[:, i] for i, col in enumerate(selected_targets)}
-                all_scores[model_key] = scores
+            X_lstm, y_lstm = prepare_lstm_data(df_eng, selected_targets, sequence_length)
             
-            # Display scores for this model
-            if model_key in all_scores:
-                scores_df = pd.DataFrame(all_scores[model_key]).T
-                scores_df.columns = ['RMSE', 'R² Score']
-                # Format the scores properly
-                formatted_scores = scores_df.copy()
-                for col in formatted_scores.columns:
-                    formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
-                
-                st.dataframe(formatted_scores)
-                
-                # Show training information
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Training Samples", len(df_eng))
-                with col2:
-                    st.metric("Sequence Length", safe_sequence_length)
-                with col3:
-                    st.metric("Training Epochs", epochs)
-                
-        except Exception as e:
-            st.error(f"Error training {model_name}: {str(e)}")
-            import traceback
-            st.error(f"Detailed error: {traceback.format_exc()}")
-            continue
+            if len(X_lstm) == 0:
+                st.error("Not enough sequences for LSTM training.")
+                return
+            
+            # Split LSTM data for initial setup
+            split_idx = int(len(X_lstm) * (1 - test_size))
+            X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
+            y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
+            
+            model, predictions, scores, history, scaler_X, scaler_y = train_lstm(
+                X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm, selected_targets, epochs=epochs
+            )
+        
+        # Display scores for LSTM model
+        st.subheader("LSTM Model Performance")
+        scores_df = pd.DataFrame(scores).T
+        scores_df.columns = ['RMSE', 'R² Score']
+        formatted_scores = scores_df.copy()
+        for col in formatted_scores.columns:
+            formatted_scores[col] = formatted_scores[col].apply(lambda x: f"{x:.4f}" if not pd.isna(x) else "N/A")
+        st.dataframe(formatted_scores)
+        
+        # Show training history
+        if history:
+            fig_history = go.Figure()
+            fig_history.add_trace(go.Scatter(
+                y=history.history['loss'],
+                mode='lines',
+                name='Training Loss'
+            ))
+            if 'val_loss' in history.history:
+                fig_history.add_trace(go.Scatter(
+                    y=history.history['val_loss'],
+                    mode='lines',
+                    name='Validation Loss'
+                ))
+            fig_history.update_layout(
+                title='LSTM Training History',
+                xaxis_title='Epoch',
+                yaxis_title='Loss'
+            )
+            st.plotly_chart(fig_history, use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error training LSTM: {str(e)}")
+        return
     
     # Future prediction with plots
-    st.header("🔮 Continuous Future Predictions")
+    st.header("🔮 LSTM Future Predictions")
     
-    if st.button("Generate Future Predictions") and all_models:
+    if st.button("Generate LSTM Future Predictions"):
         try:
-            with st.spinner('Generating future predictions...'):
+            with st.spinner('Generating future predictions with LSTM...'):
                 # Generate predictions for the next 168 hours (1 week)
-                future_predictions = generate_future_predictions(
-                    all_models, df_eng, feature_cols, selected_targets, hours=168
+                future_predictions = generate_lstm_future_predictions(
+                    model, df_eng, selected_targets, scaler_X, scaler_y, hours=168
                 )
                 
                 # Create prediction plots
-                plots = create_prediction_plots(df, future_predictions, selected_targets, list(all_models.keys()))
+                plots = create_prediction_plots(df_filtered, future_predictions, selected_targets)
                 
                 # Display plots
                 for target, fig in plots.items():
                     st.plotly_chart(fig, use_container_width=True)
                 
                 # Show prediction table for the next 24 hours
-                st.subheader("📋 Prediction Values for Next 24 Hours")
+                st.subheader("📋 LSTM Prediction Values for Next 24 Hours")
                 prediction_data = []
                 
                 for hour in range(24):
                     hour_data = {'Hour': f"Hour {hour+1}"}
-                    for model_key in all_models.keys():
-                        if model_key in future_predictions:
-                            for target in selected_targets:
-                                value = future_predictions[model_key][target][hour]
-                                # Handle NaN values
-                                if np.isnan(value):
-                                    hour_data[f"{model_key}_{target}"] = "N/A"
-                                else:
-                                    hour_data[f"{model_key}_{target}"] = f"{value:.4f}"
+                    for target in selected_targets:
+                        value = future_predictions[target][hour]
+                        if np.isnan(value):
+                            hour_data[target] = "N/A"
+                        else:
+                            hour_data[target] = f"{value:.4f}"
                     prediction_data.append(hour_data)
                 
                 if prediction_data:
                     pred_df = pd.DataFrame(prediction_data)
                     st.dataframe(pred_df)
                     
+                    # Create JSON data
+                    st.subheader("📄 LSTM Prediction JSON Data")
+                    prediction_json = create_prediction_json(future_predictions, selected_targets)
+                    
+                    if prediction_json:
+                        # Display JSON data
+                        st.json(prediction_json)
+                        
+                        # Download JSON button
+                        download_json(prediction_json, "lstm_air_quality_predictions.json")
+                        
+                        st.success("✅ LSTM predictions generated successfully! You can download the JSON data above.")
+                    
         except Exception as e:
-            st.error(f"Error generating predictions: {str(e)}")
-            import traceback
-            st.error(f"Detailed error: {traceback.format_exc()}")
+            st.error(f"Error generating LSTM predictions: {str(e)}")
 
 if __name__ == "__main__":
     main()
